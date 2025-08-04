@@ -21,3 +21,8 @@ JSON_OUTPUT = DATA_DIR / "output.json"
 # Retries
 MAX_RETRIES = 2
 RETRY_BACKOFF_MS = 1000
+
+# Anti-DDOS handling (MVP)
+ENABLE_DDOS_GUARD_HANDLING = True  # keep simple toggle
+DDOS_INITIAL_SLEEP_MS = 1000       # let interstitial render
+DDOS_CONTINUE_TIMEOUT_MS = 180_000 # wait up to 3 minutes for human solve

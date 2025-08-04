@@ -6,7 +6,9 @@ import logging
 import sys
 from datetime import datetime
 
-from .config import DATA_DIR, LOGS_DIR
+from playwright.sync_api import Page
+
+from .config import DATA_DIR, LOGS_DIR, ENABLE_DDOS_GUARD_HANDLING, DDOS_INITIAL_SLEEP_MS, DDOS_CONTINUE_TIMEOUT_MS
 
 # ---------- Logging ----------
 
@@ -72,3 +74,64 @@ def read_inns_from_excel(xlsx_path: Path, column: str = "ИНН") -> List[str]:
         .tolist()
     )
     return [i for i in inns if i]
+
+
+# ---------- Anti-DDOS helpers (MVP) ----------
+
+def detect_ddos_guard(page: Page) -> bool:
+    """
+    Very cheap heuristics to detect DDOS-Guard interstitial.
+    No iframe spelunking; rely on obvious markers.
+    """
+    try:
+        title = page.title().strip().lower()
+    except Exception:
+        title = ""
+    if "ddos-guard" in title:
+        return True
+
+    try:
+        # Fast existence checks; do not wait
+        if page.locator("#ddg-captcha, #ddg-iframe, h1#title").count() > 0:
+            # Further refine: check visible heading text when present
+            try:
+                txt = page.locator("h1#title").first.inner_text(timeout=500)
+                if "checking your browser before accessing" in txt.strip().lower():
+                    return True
+            except Exception:
+                # Presence of ddg-specific nodes is enough
+                return True
+    except Exception:
+        pass
+
+    return False
+
+
+def wait_until_search_ready(page: Page, search_selector: str, timeout_ms: int) -> None:
+    """
+    Wait until the real page is ready by waiting for the search element.
+    """
+    page.wait_for_selector(search_selector, timeout=timeout_ms, state="visible")
+
+
+def ddos_gate_if_needed(page: Page, search_selector: str) -> None:
+    """
+    MVP flow:
+      - sleep a bit (allow interstitial to render)
+      - if ddos detected: instruct user, then wait for search to appear
+    """
+    if not ENABLE_DDOS_GUARD_HANDLING:
+        return
+
+    # Initial short sleep
+    try:
+        page.wait_for_timeout(DDOS_INITIAL_SLEEP_MS)
+    except Exception:
+        pass
+
+    if detect_ddos_guard(page):
+        logging.info("step=ddos_guard_detected msg='Solve captcha in the opened browser window.' timeout_ms=%d", DDOS_CONTINUE_TIMEOUT_MS)
+        logging.info("step=ddos_guard_waiting url=%s", page.url)
+        # Block here while human solves captcha and redirect happens
+        wait_until_search_ready(page, search_selector, DDOS_CONTINUE_TIMEOUT_MS)
+        logging.info("step=ddos_guard_passed msg='Search control is visible; continuing.' url=%s", page.url)

@@ -9,6 +9,7 @@ from playwright.sync_api import Page, expect, TimeoutError as PlaywrightTimeoutE
 
 from .config import BASE_URL, DEFAULT_TIMEOUT_MS, NAVIGATION_TIMEOUT_MS, MAX_RETRIES, RETRY_BACKOFF_MS
 from .locators import searchbox, submit_button, first_company_result_link, overview_heading, zero_results_banner
+from .utils import ddos_gate_if_needed
 
 
 class StepResult(TypedDict):
@@ -21,6 +22,9 @@ class StepResult(TypedDict):
 def open_home(page: Page) -> None:
     logging.info("inn=? step=open_home outcome=starting url=%s", BASE_URL)
     page.goto(BASE_URL, timeout=NAVIGATION_TIMEOUT_MS)
+    # After navigation, run the minimal anti-DDOS gate (waits 1s, checks, then blocks on search ready if needed)
+    # Using the same locator used by submit_search for the search box.
+    ddos_gate_if_needed(page, 'role=searchbox')
     logging.info("inn=? step=open_home outcome=ok current_url=%s", page.url)
 
 
