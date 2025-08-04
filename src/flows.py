@@ -21,7 +21,10 @@ class StepResult(TypedDict):
 
 def open_home(page: Page) -> None:
     logging.info("inn=? step=open_home outcome=starting url=%s", BASE_URL)
-    page.goto(BASE_URL, timeout=NAVIGATION_TIMEOUT_MS)
+    # Wait for full load state to reduce "partial HTML" issues
+    page.goto(BASE_URL, timeout=NAVIGATION_TIMEOUT_MS, wait_until="networkidle")
+    page.wait_for_load_state("domcontentloaded")
+    page.wait_for_load_state("networkidle")
     # After navigation, run the minimal anti-DDOS gate (waits 1s, checks, then blocks on search ready if needed)
     # Using the same locator used by submit_search for the search box.
     ddos_gate_if_needed(page, 'role=searchbox')
@@ -32,13 +35,19 @@ def submit_search(page: Page, inn: str) -> StepResult:
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             logging.info("inn=%s step=fill_search attempt=%d", inn, attempt)
+            # Ensure search is ready before interaction
+            page.wait_for_load_state("domcontentloaded")
             sb = searchbox(page)
+            sb.wait_for(state="visible", timeout=DEFAULT_TIMEOUT_MS)
             sb.click()
             sb.fill(inn)
 
             logging.info("inn=%s step=submit attempt=%d", inn, attempt)
             submit = submit_button(page)
+            submit.wait_for(state="visible", timeout=DEFAULT_TIMEOUT_MS)
             submit.click()
+            # Allow any XHR/navigation to settle before we look for results
+            page.wait_for_load_state("networkidle")
 
             # Either we land on results or directly on company
             # Quick zero-results detection on the same page (some sites update results dynamically)
@@ -52,19 +61,26 @@ def submit_search(page: Page, inn: str) -> StepResult:
                 pass
 
             # If a result link exists, click and then expect company URL
+            page.wait_for_load_state("domcontentloaded")
             link = first_company_result_link(page)
             cnt = link.count()
             logging.info("inn=%s step=result_link_count count=%d", inn, cnt)
             if cnt == 0:
-                # Dump a minimal debug snapshot to understand current state
-                try:
-                    from .utils import dump_debug
-                    dump_debug(page, "no_result_links_after_submit")
-                except Exception:
-                    pass
+                # Give results a moment if they render dynamically
+                page.wait_for_timeout(500)
+                cnt = link.count()
+                logging.info("inn=%s step=result_link_count_after_wait count=%d", inn, cnt)
+                if cnt == 0:
+                    # Dump a minimal debug snapshot to understand current state
+                    try:
+                        from .utils import dump_debug
+                        dump_debug(page, "no_result_links_after_submit")
+                    except Exception:
+                        pass
             if cnt > 0:
                 link.click()
                 logging.info("inn=%s step=company_link_click outcome=clicked", inn)
+                page.wait_for_load_state("networkidle")
 
             # Expect company URL (still succeeds if we were redirected directly)
             expect(page).to_have_url(re.compile(r"/company/ul/"), timeout=NAVIGATION_TIMEOUT_MS)
