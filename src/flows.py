@@ -9,7 +9,7 @@ from playwright.sync_api import Page, expect, TimeoutError as PlaywrightTimeoutE
 
 from .config import BASE_URL, DEFAULT_TIMEOUT_MS, NAVIGATION_TIMEOUT_MS, MAX_RETRIES, RETRY_BACKOFF_MS, ENABLE_RESULTS_READY_WAIT, RESULTS_READY_SELECTOR, RESULTS_READY_TIMEOUT_MS
 from .locators import searchbox, submit_button, first_company_result_link, overview_heading, zero_results_banner
-from .utils import ddos_gate_if_needed, await_idle, dump_debug
+from .utils import ddos_gate_if_needed, await_idle, dump_debug, goto, ensure_visible, results_ready, flow_step, ok, fail
 
 
 class StepResult(TypedDict):
@@ -19,18 +19,14 @@ class StepResult(TypedDict):
     overview_text: str | None
 
 
-def open_home(page: Page) -> None:
-    logging.info("inn=? step=open_home outcome=starting url=%s", BASE_URL)
-    # Wait for full load state to reduce "partial HTML" issues
-    page.goto(BASE_URL, timeout=NAVIGATION_TIMEOUT_MS, wait_until="networkidle")
-    # Universal settle
-    await_idle(page)
-    # After navigation, run the minimal anti-DDOS gate (waits 1s, checks, then blocks on search ready if needed)
-    # Using the same locator used by submit_search for the search box.
-    ddos_gate_if_needed(page, 'role=searchbox')
-    logging.info("inn=? step=open_home outcome=ok current_url=%s", page.url)
+@flow_step("open_home")
+def open_home(page: Page) -> dict:
+    # Centralized navigation: goto + await_idle + optional DDOS gate
+    goto(page, BASE_URL, wait_until="networkidle", ddos_search_selector='role=searchbox', apply_ddos_gate=True)
+    return ok("home opened", page.url)
 
 
+@flow_step("submit_search")
 def submit_search(page: Page, inn: str) -> StepResult:
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -38,32 +34,29 @@ def submit_search(page: Page, inn: str) -> StepResult:
             # Ensure page settled and search is visible before interaction
             await_idle(page)
             sb = searchbox(page)
-            sb.wait_for(state="visible", timeout=DEFAULT_TIMEOUT_MS)
+            ensure_visible(sb, timeout_ms=DEFAULT_TIMEOUT_MS)
             sb.click()
             sb.fill(inn)
 
             logging.info("inn=%s step=submit attempt=%d", inn, attempt)
             submit = submit_button(page)
-            submit.wait_for(state="visible", timeout=DEFAULT_TIMEOUT_MS)
+            ensure_visible(submit, timeout_ms=DEFAULT_TIMEOUT_MS)
             submit.click()
             # Settle after submit before querying results
             await_idle(page)
             # Optional, targeted results readiness wait (simple, opt-in via config)
             if ENABLE_RESULTS_READY_WAIT:
-                try:
-                    page.wait_for_selector(RESULTS_READY_SELECTOR, timeout=RESULTS_READY_TIMEOUT_MS, state="visible")
+                if results_ready(page, RESULTS_READY_SELECTOR, timeout_ms=RESULTS_READY_TIMEOUT_MS):
                     logging.info("inn=%s step=results_ready outcome=ok", inn)
-                except PlaywrightTimeoutError:
+                else:
                     logging.info("inn=%s step=results_ready outcome=timeout", inn)
-                except Exception as _:
-                    logging.info("inn=%s step=results_ready outcome=skipped_error", inn)
 
             # Either we land on results or directly on company
             # Quick zero-results detection on the same page (some sites update results dynamically)
             try:
                 if zero_results_banner(page).is_visible():
                     logging.info("inn=%s step=zero_results_detected outcome=no_results", inn)
-                    return {"status": "no_results", "message": "zero results banner visible", "url": page.url, "overview_text": None}
+                    return fail("no_results", "zero results banner visible", page.url)
             except PlaywrightTimeoutError:
                 pass
             except Exception:
@@ -93,32 +86,31 @@ def submit_search(page: Page, inn: str) -> StepResult:
             # Expect company URL (still succeeds if we were redirected directly)
             expect(page).to_have_url(re.compile(r"/company/ul/"), timeout=NAVIGATION_TIMEOUT_MS)
             logging.info("inn=%s step=url_assertion outcome=ok url=%s", inn, page.url)
-            return {"status": "ok", "message": "navigated to company page", "url": page.url, "overview_text": None}
+            return ok("navigated to company page", page.url)
 
         except PlaywrightTimeoutError as e:
-            logging.warning("inn=%s step=submit_search outcome=timeout attempt=%d msg=%s", inn, attempt, str(e))
+            # Still honor existing retry loop but keep it smaller
             try:
                 dump_debug(page, "timeout_in_submit_search")
             except Exception:
                 pass
             if attempt == MAX_RETRIES:
-                return {"status": "timeout", "message": "navigation/search timeout", "url": page.url, "overview_text": None}
+                return fail("timeout", "navigation/search timeout", page.url)
             sleep(RETRY_BACKOFF_MS / 1000.0)
         except Exception as e:
             # Heuristic captcha suspicion: page blocked or unexpected interstitial
-            logging.warning("inn=%s step=submit_search outcome=error attempt=%d msg=%s", inn, attempt, str(e))
             if "captcha" in (str(e).lower()):
-                return {"status": "captcha_suspected", "message": str(e), "url": page.url, "overview_text": None}
+                return fail("captcha_suspected", str(e), page.url)
             if attempt == MAX_RETRIES:
-                return {"status": "error", "message": str(e), "url": page.url, "overview_text": None}
+                return fail("error", str(e), page.url)
             sleep(RETRY_BACKOFF_MS / 1000.0)
 
     return {"status": "error", "message": "unreachable state", "url": page.url, "overview_text": None}
 
 
+@flow_step("extract_overview")
 def extract_overview(page: Page, inn: str) -> StepResult:
     try:
-        logging.info("inn=%s step=extract_overview outcome=starting", inn)
         # Ensure heading is visible
         hd = overview_heading(page)
         hd.wait_for(state="visible", timeout=DEFAULT_TIMEOUT_MS)
@@ -126,8 +118,7 @@ def extract_overview(page: Page, inn: str) -> StepResult:
         # Get first following div's innerText
         h_el = hd.element_handle()
         if not h_el:
-            logging.warning("inn=%s step=extract_overview outcome=missing_heading", inn)
-            return {"status": "missing_overview", "message": "heading handle missing", "url": page.url, "overview_text": None}
+            return fail("missing_overview", "heading handle missing", page.url)
 
         text = page.evaluate(
             """(h) => {
@@ -145,12 +136,9 @@ def extract_overview(page: Page, inn: str) -> StepResult:
 
         text = text.strip()
         if not text:
-            logging.warning("inn=%s step=extract_overview outcome=missing_overview url=%s", inn, page.url)
-            return {"status": "missing_overview", "message": "no following div text", "url": page.url, "overview_text": None}
+            return fail("missing_overview", "no following div text", page.url)
 
-        logging.info("inn=%s step=extract_overview outcome=ok chars=%d", inn, len(text))
-        return {"status": "ok", "message": "extracted overview", "url": page.url, "overview_text": text}
-
+        return ok("extracted overview", page.url, overview_text=text)
     except PlaywrightTimeoutError as e:
         logging.warning("inn=%s step=extract_overview outcome=timeout msg=%s", inn, str(e))
         return {"status": "timeout", "message": "overview timeout", "url": page.url, "overview_text": None}

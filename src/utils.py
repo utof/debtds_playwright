@@ -110,6 +110,26 @@ def dump_debug(page: Page, label: str) -> None:
         logging.warning("step=dump_debug_failed label=%s msg=%s", label, str(e))
 
 
+# ---------- Stability primitives ----------
+def ensure_visible(locator, *, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> None:
+    """
+    Uniform wrapper ensuring a locator is visible before interaction.
+    Keeps all visibility waits consistent and tunable from one place.
+    """
+    locator.wait_for(state="visible", timeout=timeout_ms)
+
+
+def results_ready(page: Page, selector: str, *, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
+    """
+    Wait until results area is present/visible. Returns True if visible, False on timeout.
+    """
+    try:
+        page.wait_for_selector(selector, state="visible", timeout=timeout_ms)
+        return True
+    except Exception:
+        return False
+
+
 # ---------- Excel ----------
 
 def read_inns_from_excel(xlsx_path: Path, column: str = "ИНН") -> List[str]:
@@ -188,3 +208,115 @@ def ddos_gate_if_needed(page: Page, search_selector: str) -> None:
         # Block here while human solves captcha and redirect happens
         wait_until_search_ready(page, search_selector, DDOS_CONTINUE_TIMEOUT_MS)
         logging.info("step=ddos_guard_passed msg='Search control is visible; continuing.' url=%s", page.url)
+
+
+# ---------- Navigation wrapper (central policy) ----------
+
+def goto(page: Page, url: str, *, wait_until: str = "networkidle", ddos_search_selector: str | None = None, apply_ddos_gate: bool = True) -> None:
+    """
+    Centralized navigation:
+      - page.goto(url, wait_until=...)
+      - await_idle()
+      - optional DDOS gate using provided search selector
+    """
+    page.goto(url, wait_until=wait_until)
+    await_idle(page)
+    if apply_ddos_gate and ddos_search_selector:
+        ddos_gate_if_needed(page, ddos_search_selector)
+
+
+# ---------- Retry harness (per-step/per-INN) ----------
+
+class RetryOutcome:
+    OK = "ok"
+    TIMEOUT = "timeout"
+    ERROR = "error"
+
+
+def run_with_retries(fn, *, max_retries: int, backoff_ms: int, on_error=None):
+    """
+    Generic retry harness. Calls fn() up to max_retries.
+    - If fn() returns a dict with status != "ok", it's treated as error and retried.
+    - Exceptions/timeouts are also retried.
+    - on_error(attempt, exc_or_result) can be provided for logging/snapshots.
+    Returns the final fn() result on success or the last error dict.
+    """
+    last_err: Dict[str, Any] | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            res = fn()
+            if isinstance(res, dict) and res.get("status") == "ok":
+                return res
+            last_err = res if isinstance(res, dict) else {"status": RetryOutcome.ERROR, "message": "unknown result"}
+            if on_error:
+                try:
+                    on_error(attempt, last_err)
+                except Exception:
+                    pass
+        except Exception as e:
+            last_err = {"status": RetryOutcome.ERROR, "message": str(e)}
+            if on_error:
+                try:
+                    on_error(attempt, e)
+                except Exception:
+                    pass
+        if attempt < max_retries:
+            try:
+                page = None
+                # If the fn is a closure with page bound, caller can handle snapshots in on_error.
+                # We only sleep/backoff here.
+                import time
+                time.sleep(backoff_ms / 1000.0)
+            except Exception:
+                pass
+    return last_err or {"status": RetryOutcome.ERROR, "message": "unknown"}
+
+
+# ---------- Flow niceties: result builders and decorator ----------
+
+def ok(message: str, url: str, overview_text: str | None = None) -> Dict[str, Any]:
+    return {"status": "ok", "message": message, "url": url, "overview_text": overview_text}
+
+
+def fail(status: str, message: str, url: str, overview_text: str | None = None) -> Dict[str, Any]:
+    return {"status": status, "message": message, "url": url, "overview_text": overview_text}
+
+
+def flow_step(name: str):
+    """
+    Decorator to standardize logging and error handling for flow steps.
+    - Logs start/ok/error with a consistent format
+    - Catches exceptions and converts them to a StepResult-like dict via fail()
+    - Optionally dumps debug snapshots for quick post-mortem
+    Keep step functions themselves lean; no try/except/log soup inside flows.
+    """
+    def _wrap(fn):
+        def _inner(*args, **kwargs):
+            try:
+                logging.info("step=%s outcome=starting", name)
+                res = fn(*args, **kwargs)
+                # If a dict StepResult is returned, propagate; else log ok
+                if isinstance(res, dict):
+                    logging.info("step=%s outcome=%s", name, res.get("status", "ok"))
+                    return res
+                logging.info("step=%s outcome=ok", name)
+                return res
+            except Exception as e:
+                # Try to access page from args for debug, if present
+                page = None
+                for a in args:
+                    if hasattr(a, "wait_for_selector") and hasattr(a, "url"):
+                        page = a
+                        break
+                try:
+                    if page:
+                        dump_debug(page, f"flow_error_%s" % name)
+                except Exception:
+                    pass
+                msg = str(e)
+                status = "captcha_suspected" if "captcha" in msg.lower() else "error"
+                current_url = page.url if page else ""
+                logging.warning("step=%s outcome=%s msg=%s", name, status, msg)
+                return fail(status, msg, current_url)
+        return _inner
+    return _wrap
