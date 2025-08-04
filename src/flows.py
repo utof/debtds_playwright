@@ -53,17 +53,31 @@ def submit_search(page: Page, inn: str) -> StepResult:
 
             # If a result link exists, click and then expect company URL
             link = first_company_result_link(page)
-            if link.count() > 0:
+            cnt = link.count()
+            logging.info("inn=%s step=result_link_count count=%d", inn, cnt)
+            if cnt == 0:
+                # Dump a minimal debug snapshot to understand current state
+                try:
+                    from .utils import dump_debug
+                    dump_debug(page, "no_result_links_after_submit")
+                except Exception:
+                    pass
+            if cnt > 0:
                 link.click()
                 logging.info("inn=%s step=company_link_click outcome=clicked", inn)
 
-            # Expect company URL
+            # Expect company URL (still succeeds if we were redirected directly)
             expect(page).to_have_url(re.compile(r"/company/ul/"), timeout=NAVIGATION_TIMEOUT_MS)
             logging.info("inn=%s step=url_assertion outcome=ok url=%s", inn, page.url)
             return {"status": "ok", "message": "navigated to company page", "url": page.url, "overview_text": None}
 
         except PlaywrightTimeoutError as e:
             logging.warning("inn=%s step=submit_search outcome=timeout attempt=%d msg=%s", inn, attempt, str(e))
+            try:
+                from .utils import dump_debug
+                dump_debug(page, "timeout_in_submit_search")
+            except Exception:
+                pass
             if attempt == MAX_RETRIES:
                 return {"status": "timeout", "message": "navigation/search timeout", "url": page.url, "overview_text": None}
             sleep(RETRY_BACKOFF_MS / 1000.0)

@@ -8,7 +8,7 @@ from datetime import datetime
 
 from playwright.sync_api import Page
 
-from .config import DATA_DIR, LOGS_DIR, ENABLE_DDOS_GUARD_HANDLING, DDOS_INITIAL_SLEEP_MS, DDOS_CONTINUE_TIMEOUT_MS
+from .config import DATA_DIR, LOGS_DIR, ENABLE_DDOS_GUARD_HANDLING, DDOS_INITIAL_SLEEP_MS, DDOS_CONTINUE_TIMEOUT_MS, DEFAULT_TIMEOUT_MS
 
 # ---------- Logging ----------
 
@@ -57,6 +57,34 @@ def save_json_atomic(path: Path, data: Dict[str, Any]) -> None:
     with tmp.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     tmp.replace(path)
+
+
+# ---------- Debug snapshots ----------
+
+def dump_debug(page: Page, label: str) -> None:
+    """
+    Save URL, HTML, and a screenshot for quick post-mortem.
+    Files go under data/logs/debug/{timestamp}_{label}.*
+    """
+    try:
+        base = LOGS_DIR / "debug"
+        base.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stem = f"{ts}_{label}"
+        (base / f"{stem}_url.txt").write_text(page.url, encoding="utf-8")
+        # Limit inner HTML fetch time to avoid blocking too long
+        try:
+            html = page.content()
+        except Exception:
+            html = "<failed to get content>"
+        (base / f"{stem}.html").write_text(html, encoding="utf-8")
+        try:
+            page.screenshot(path=str(base / f"{stem}.png"), full_page=True)
+        except Exception:
+            pass
+        logging.info("step=dump_debug_saved label=%s path=%s", label, base)
+    except Exception as e:
+        logging.warning("step=dump_debug_failed label=%s msg=%s", label, str(e))
 
 
 # ---------- Excel ----------
