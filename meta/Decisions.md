@@ -2,35 +2,36 @@
 
 This document records key decisions made during the refactor and setup to provide long-term context for future contributors.
 
-## 1) Split responsibilities into a minimal two-folder structure
+## 1) Minimal structure (src/ + data/)
+- Keep only `src/` for code and `data/` for inputs/outputs/logs.
+- Rationale: Simplicity, faster iteration, fewer moving parts.
 
-- Folders: `src/` (code) and `data/` (inputs/outputs/logs).
-- Rationale: Simplify mental model and navigation while enabling separation of concerns and testing. Avoid premature complexity.
+## 2) Single orchestrator module (runner.py), no separate entry script
+- We decided not to keep a separate entrypoint file.
+- Running options:
+  - `python src/runner.py` (script mode)
+  - `python -m src.runner` (module mode)
+  - `python -c "from src.runner import run; run()"` (direct invocation)
+- Rationale: Avoid a redundant wrapper file that only imports and calls `run()`.
 
-## 2) Keep a thin entrypoint and centralize orchestration
+## 3) Robust imports for direct execution
+- `src/runner.py` includes fallback import logic:
+  - Tries package-relative imports.
+  - On ImportError, adds repo root to `sys.path` and imports via `src.*`.
+- Rationale: Make `runner.py` executable in common scenarios without packaging.
 
-- `my_test_script.py` replaced with a thin entrypoint that calls `src.runner.run()`.
-- Rationale: Keeps the CLI interaction trivial and pushes business logic into versioned modules with clear boundaries.
+## 4) Captcha handling as manual, pause-on-captcha supported
+- Introduced `PAUSE_ON_CAPTCHA` (env-controlled). When the DDOS-Guard page is detected:
+  - If `PAUSE_ON_CAPTCHA=true` and `HEADLESS=false`, we call `page.pause()` and log instructions to solve the captcha, then Resume in the Inspector to continue the same INN.
+  - Otherwise, we mark `captcha_suspected`.
+- Rationale: Admins allowed scraping and automated captcha solvers.
 
-## 3) Centralize configuration and selectors
+## 5) URL assertion and zero-results handling
+- Success criteria: company pages should include `/company/ul/` in the URL.
+- Zero results detection looks for “найдено 0 организаций” and stores `"0 записей"` to JSON.
+- Rationale: Make outcomes explicit and structured.
 
-- `src/config.py` holds BASE_URL, timeouts, headless default, paths, retries.
-- `src/locators.py` holds all selectors (searchbox, submit button, result link by `/company/ul/`, overview heading, zero-results banner).
-- Rationale: Reduce selector drift and avoid magic numbers/strings sprinkled across the code.
-
-## 4) Logging-first approach with resumability and atomic writes
-
-- Structured logging for each step (with INN and outcome) to `data/logs/`.
-- JSON writes are atomic and performed after each INN to allow safe resumption.
-- Rationale: Observability + reliability for long-running scraping tasks.
-
-## 5) Explicit flow stages with URL assertions and zero-results handling
-
-- Flows assert navigation to `/company/ul/` when opening a company page.
-- Zero-results detection via substring “найдено 0 организаций”.
-- Rationale: Make success criteria precise and handle empty states explicitly.
-
-## 6) Prepare for captcha scenarios without implementing an opinionated solution
-
-- Strategy documented rather than implemented to avoid policy/ethics risk and to keep the code compliant and flexible.
-- Rationale: Captcha handling is situational and may require policy/legal review.
+## 6) Overview extraction strategy
+- Target: heading “Общая информация об организации”.
+- Extract: first following `div` that has non-empty text.
+- Rationale: Avoid brittle assumptions; prefer nearest meaningful content.

@@ -5,15 +5,11 @@ from playwright.sync_api import Page, Locator
 def searchbox(page: Page) -> Locator:
     # Prefer role-based searchbox, fallback to common inputs
     loc = page.get_by_role("searchbox")
-    if loc.count() == 0:
-        loc = page.locator('input[type="search"], input[role="searchbox"], [aria-label*="Поиск" i], input[name="q"]')
     return loc.first
 
 def submit_button(page: Page) -> Locator:
     # Prefer button[type=submit]; fallback to any role button
     loc = page.locator('form button[type="submit"], button[type="submit"], [role="button"][type="submit"]')
-    if loc.count() == 0:
-        loc = page.get_by_role("button")
     return loc.first
 
 def first_company_result_link(page: Page) -> Locator:

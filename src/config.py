@@ -9,7 +9,8 @@ DEFAULT_TIMEOUT_MS = 30_000
 NAVIGATION_TIMEOUT_MS = 30_000
 
 # Headless by default for performance; set to False for debugging
-HEADLESS = True if os.getenv("HEADLESS", "true").lower() == "true" else False
+# HEADLESS = True if os.getenv("HEADLESS", "true").lower() == "true" else False
+HEADLESS = False
 
 # Data paths
 DATA_DIR = Path("data")
