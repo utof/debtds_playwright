@@ -35,6 +35,29 @@ def setup_logging(run_name: str | None = None) -> None:
 
 # ---------- JSON IO ----------
 
+# ---------- Page readiness (universal, minimal) ----------
+
+def await_idle(page: Page) -> None:
+    """
+    Universal load-settle helper to reduce racing/partial DOM:
+      - domcontentloaded (HTML parsed)
+      - networkidle (no in-flight requests)
+      - tiny grace pause to allow microtasks/late JS (200ms)
+    Safe to call multiple times. No assumptions about current URL.
+    """
+    try:
+        page.wait_for_load_state("domcontentloaded")
+    except Exception:
+        pass
+    try:
+        page.wait_for_load_state("networkidle")
+    except Exception:
+        pass
+    try:
+        page.wait_for_timeout(200)
+    except Exception:
+        pass
+
 def load_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
@@ -139,6 +162,8 @@ def wait_until_search_ready(page: Page, search_selector: str, timeout_ms: int) -
     """
     Wait until the real page is ready by waiting for the search element.
     """
+    # Ensure page is idle before selector waits to reduce false negatives
+    await_idle(page)
     page.wait_for_selector(search_selector, timeout=timeout_ms, state="visible")
 
 
