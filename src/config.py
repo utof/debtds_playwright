@@ -22,6 +22,12 @@ JSON_OUTPUT = DATA_DIR / "output.json"
 MAX_RETRIES = 2
 RETRY_BACKOFF_MS = 1000
 
+# Results readiness (opt-in, minimal and safe)
+ENABLE_RESULTS_READY_WAIT = True
+# A conservative selector that likely exists when results render (container or any result link)
+RESULTS_READY_SELECTOR = 'a[href*="/company/ul/"], a[href*="/company/ip/"]'
+RESULTS_READY_TIMEOUT_MS = DEFAULT_TIMEOUT_MS
+
 # Anti-DDOS handling (MVP)
 ENABLE_DDOS_GUARD_HANDLING = True  # keep simple toggle
 DDOS_INITIAL_SLEEP_MS = 1000       # let interstitial render
