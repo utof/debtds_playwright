@@ -6,7 +6,8 @@ import logging
 import sys
 from datetime import datetime
 
-from playwright.sync_api import Page
+# from playwright.sync_api import Page
+from patchright.sync_api import Page
 
 from .config import DATA_DIR, LOGS_DIR, ENABLE_DDOS_GUARD_HANDLING, DDOS_INITIAL_SLEEP_MS, DDOS_CONTINUE_TIMEOUT_MS, DEFAULT_TIMEOUT_MS
 

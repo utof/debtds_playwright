@@ -18,7 +18,7 @@ def run(excel_path: Path = EXCEL_INPUT, json_out: Path = JSON_OUTPUT, headless: 
     db: Dict[str, Any] = load_json(json_out)
     logging.info("step=load_json outcome=ok existing=%d", len(db))
 
-    with playwright_session(headless=headless) as (_, __, page):
+    with playwright_session(headless=headless) as (_, page):
         for idx, inn in enumerate(inns, start=1):
             if inn in db and db[inn]:
                 logging.info("inn=%s step=skip_existing idx=%d", inn, idx)

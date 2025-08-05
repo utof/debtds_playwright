@@ -1,4 +1,5 @@
-from playwright.sync_api import Page, Locator
+# from playwright.sync_api import Page, Locator
+from patchright.sync_api import Page, Locator
 
 # Centralized locator helpers to keep selectors consistent and easy to adjust.
 

@@ -5,7 +5,8 @@ import logging
 from time import sleep
 from typing import Literal, TypedDict
 
-from playwright.sync_api import Page, expect, TimeoutError as PlaywrightTimeoutError
+# from playwright.sync_api import Page, expect, TimeoutError as PlaywrightTimeoutError
+from patchright.sync_api import Page, expect, TimeoutError as PlaywrightTimeoutError
 
 from .config import BASE_URL, DEFAULT_TIMEOUT_MS, NAVIGATION_TIMEOUT_MS, MAX_RETRIES, RETRY_BACKOFF_MS, ENABLE_RESULTS_READY_WAIT, RESULTS_READY_SELECTOR, RESULTS_READY_TIMEOUT_MS
 from .locators import searchbox, submit_button, first_company_result_link, overview_heading, zero_results_banner
