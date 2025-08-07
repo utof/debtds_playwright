@@ -7,7 +7,7 @@ datadir
 *.txt
 *.html
 *.png
-
+debug
 
 
 senenium.py
