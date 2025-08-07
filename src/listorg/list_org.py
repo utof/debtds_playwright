@@ -1,6 +1,6 @@
 import re
 from patchright.sync_api import Playwright, sync_playwright, expect
-from flows import extract_main_activity,  find_company_data
+from flows import extract_main_activity,  find_company_data, parse_financial_data
 from utils import process_inn
 
 def run(playwright: Playwright, inn: str) -> None:
@@ -26,9 +26,11 @@ def run(playwright: Playwright, inn: str) -> None:
     link.wait_for()  # Waits until the element is attached and visible
     link.click()
     # page.wait_for_load_state("domcontentloaded", timeout=40000)
-    company_card = find_company_data(page)
-    print(company_card)
-    print(extract_main_activity(page))
+    # company_card = find_company_data(page)
+    # print(company_card)
+    # print(extract_main_activity(page))
+    financial_data = parse_financial_data(page)
+    print(financial_data)
     page.close()
     print("page closed")
     # ---------------------
@@ -43,6 +45,6 @@ def run(playwright: Playwright, inn: str) -> None:
 
 
 if __name__ == "__main__":
-    inn = "263012310"
+    inn = "1400013278"
     with sync_playwright() as playwright:
         run(playwright, inn)
