@@ -15,12 +15,15 @@ def run(playwright: Playwright, inn: str) -> None:
     # page.wait_for_load_state("domcontentloaded", timeout=40000)
     company_card = find_company_data(page)
     print(company_card)
-    page.get_by_text("Полное юридическое наименование:").click() #2
-    page.get_by_text("Основной (по коду ОКВЭД ред.2): 49.41").click() #3
-
+    print(extract_main_activity(page))
+    page.close()
+    print("page closed")
     # ---------------------
     context.close()
+    print("context closed")
+
     browser.close()
+    print("browser closed")
 
 
 
@@ -70,6 +73,55 @@ def find_company_data(page) -> dict[str, str]:
                 company_data[key] = value
                 
     return company_data
+
+
+def extract_main_activity(page) -> dict:
+    """
+    Extracts the main business activity (ОКВЭД) from the company details page.
+
+    It finds the paragraph containing the main activity, extracts the code from
+    a specific link, and then gets the descriptive text that follows.
+
+    Args:
+        page: The Playwright page object, assumed to be on the company details page.
+
+    Returns:
+        A dictionary with the main activity, or an empty dictionary if not found.
+        Example: {"Основная деятельность": "49.41 - Деятельность автомобильного грузового транспорта"}
+    """
+    # Locator for the paragraph containing the main activity information.
+    # :has-text() makes this very specific and robust.
+    p_locator = page.locator('p:has-text("Основной (по коду ОКВЭД ред.2)")')
+
+    # Check if the element exists on the page before trying to extract data.
+    if p_locator.count() > 0:
+        # Within that paragraph, find the link containing the activity code.
+        anchor_locator = p_locator.locator("a[href*='/list?okved']")
+
+        if anchor_locator.count() > 0:
+            # Extract the code (e.g., "49.41") from the link.
+            activity_code = anchor_locator.inner_text()
+            
+            # Get the full text of the paragraph to extract the description.
+            full_text = p_locator.text_content()
+            
+            description = ""
+            # Split the string by the activity code to isolate the description part.
+            parts = full_text.split(activity_code, 1)
+            if len(parts) > 1:
+                # The description is the second part of the split.
+                # Clean it by removing leading/trailing whitespace and the hyphen.
+                description = parts[1].strip().removeprefix('-').strip()
+
+            # Format the final string. If a description exists, combine them.
+            final_value = f"{activity_code} - {description}" if description else activity_code
+            
+            return {"Основная деятельность": final_value}
+
+    # Return an empty dictionary if the main activity section wasn't found.
+    return {}
+
+
 if __name__ == "__main__":
     inn = "0263012310"
     with sync_playwright() as playwright:
