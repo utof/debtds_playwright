@@ -26,6 +26,7 @@ def run(playwright: Playwright, inn: str) -> None:
     link.click()
     # print(find_company_data(page))
     # print(extract_main_activity(page))
+    # financial_data = parse_financial_data(page, target_indicators=["Выручка", "Основные средства"])
     financial_data = parse_financial_data(page)
     print(financial_data)
     # make a json file and save financial_data to it

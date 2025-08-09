@@ -95,12 +95,15 @@ def extract_main_activity(page: Page) -> dict:
     # Return an empty dictionary if the main activity section wasn't found.
     return {}
 
-def parse_financial_data(page: Page) -> dict:
+def parse_financial_data(page: Page, target_indicators: list[str] | None = None) -> dict:
     """
     Parses the financial data table from the company's report page.
 
     Args:
         page: The Playwright page object, on a company's main page.
+        target_indicators: An optional list of financial indicators to parse.
+                           If provided, the function will only search for and extract these indicators.
+                           If None (default), it parses all available indicators.
 
     Returns:
         A dictionary with financial indicators and their values over the years.
@@ -112,41 +115,47 @@ def parse_financial_data(page: Page) -> dict:
     table_locator = page.locator("table#rep_table")
     table_locator.wait_for(timeout=10000)
 
-    # Extract years from the first header row containing "Показатель"
+    # Extract years from the header row
     header_row = table_locator.locator('tr:has-text("Показатель")').first
     header_cells = header_row.locator("td.tth").all_text_contents()
     
-    # Years are typically after 'Код', 'Показатель', ''
-    # We find the index of "Показатель" and slice from the next non-empty cell
     try:
         pokazatel_index = header_cells.index('Показатель')
-        # This filters out the empty cell after 'Показатель'
         years = [year.strip() for year in header_cells[pokazatel_index + 1:] if year.strip().isdigit()]
     except (ValueError, IndexError):
-        return {} # Return empty if header structure is not as expected
+        return {}  # Return empty if header structure is not as expected
 
     financial_data = {}
-    rows = table_locator.locator("tbody > tr").all()
 
-    for row in rows:
-        # Stop parsing if we reach the "Другие показатели" section
-        if "Другие показатели:" in row.inner_text():
-            break
+    if target_indicators:
+        # Optimized path: Search only for the specified indicators
+        for indicator_name in target_indicators:
+            # Locate the row by finding the link with the exact indicator name
+            row_locator = table_locator.locator(f'tr:has(a:text-is("{indicator_name}"))')
+            
+            if row_locator.count() > 0:
+                cells = row_locator.first.locator("td").all()
+                if len(cells) == len(years) + 3:
+                    financial_data[indicator_name] = {}
+                    data_cells = cells[3:]
+                    for i, year in enumerate(years):
+                        value = (data_cells[i].text_content() or "").strip()
+                        financial_data[indicator_name][year] = value
+    else:
+        # Original path: Iterate through all rows
+        rows = table_locator.locator("tbody > tr").all()
+        for row in rows:
+            if "Другие показатели:" in row.inner_text():
+                break
 
-        cells = row.locator("td").all()
-        
-        # Ensure it's a data row with the correct number of columns
-        if len(cells) == len(years) + 3:
-            indicator_cell = cells[1]
-            # Use inner_text() for more reliable text extraction from complex cells.
-            indicator_name = (indicator_cell.inner_text() or "").strip()
-
-            if indicator_name:
-                financial_data[indicator_name] = {}
-                # Data cells start at index 3
-                data_cells = cells[3:]
-                for i, year in enumerate(years):
-                    value = (data_cells[i].text_content() or "").strip()
-                    financial_data[indicator_name][year] = value
+            cells = row.locator("td").all()
+            if len(cells) == len(years) + 3:
+                indicator_name = (cells[1].inner_text() or "").strip()
+                if indicator_name:
+                    financial_data[indicator_name] = {}
+                    data_cells = cells[3:]
+                    for i, year in enumerate(years):
+                        value = (data_cells[i].text_content() or "").strip()
+                        financial_data[indicator_name][year] = value
     
     return financial_data
