@@ -138,8 +138,8 @@ def parse_financial_data(page: Page) -> dict:
         # Ensure it's a data row with the correct number of columns
         if len(cells) == len(years) + 3:
             indicator_cell = cells[1]
-            # Clean indicator name, removing any nested tags like <b>
-            indicator_name = (indicator_cell.text_content() or "").strip()
+            # Use inner_text() for more reliable text extraction from complex cells.
+            indicator_name = (indicator_cell.inner_text() or "").strip()
 
             if indicator_name:
                 financial_data[indicator_name] = {}

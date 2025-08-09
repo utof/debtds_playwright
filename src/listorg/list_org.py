@@ -20,14 +20,11 @@ def run(playwright: Playwright, inn: str) -> None:
         context.close()
         browser.close()
         return message
-    # page.wait_for_load_state("domcontentloaded", timeout=40000)
     # page.get_by_role("link", name="ООО \"ТРАНССПЕЦСЕРВИС\"").click() #1
     link = page.locator("a[href*='/company/']").first
     link.wait_for()  # Waits until the element is attached and visible
     link.click()
-    # page.wait_for_load_state("domcontentloaded", timeout=40000)
-    # company_card = find_company_data(page)
-    # print(company_card)
+    # print(find_company_data(page))
     # print(extract_main_activity(page))
     financial_data = parse_financial_data(page)
     print(financial_data)
