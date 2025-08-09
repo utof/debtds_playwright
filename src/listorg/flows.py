@@ -109,6 +109,9 @@ def parse_financial_data(page: Page, target_indicators: list[str] | None = None)
         A dictionary with financial indicators and their values over the years.
         Example: {'Выручка': {'2023': '94208', '2022': '24755'}}
     """
+    report_link_locator = page.locator('a[href*="/report"]')
+    if report_link_locator.count() == 0:
+        return {}
     report_url = f"{page.url.rstrip('/')}/report"
     page.goto(report_url, wait_until="domcontentloaded")
 
