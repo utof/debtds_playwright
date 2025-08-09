@@ -107,7 +107,7 @@ def parse_financial_data(page: Page) -> dict:
         Example: {'Выручка': {'2023': '94208', '2022': '24755'}}
     """
     report_url = f"{page.url.rstrip('/')}/report"
-    page.goto(report_url)
+    page.goto(report_url, wait_until="domcontentloaded")
 
     table_locator = page.locator("table#rep_table")
     table_locator.wait_for(timeout=10000)
