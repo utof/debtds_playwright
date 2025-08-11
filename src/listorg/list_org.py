@@ -3,6 +3,8 @@ from patchright.sync_api import Playwright, sync_playwright, expect
 from flows import extract_main_activity,  find_company_data, parse_financial_data, handle_captcha
 from utils import process_inn
 from loguru import logger
+import os
+import datetime
 
 def run(playwright: Playwright, inn: str) -> None:
     inn = process_inn(inn)
@@ -59,7 +61,7 @@ if __name__ == "__main__":
         logger.exception(f"Unhandled exception in main execution: {e}")
         # Save error details to timestamped file
         os.makedirs("data/error_logs", exist_ok=True)
-        timestamp = logger._get_current_datetime().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         error_file = f"data/error_logs/error_{timestamp}.log"
         logger.add(error_file, level="ERROR")
         logger.error(f"Error details: {e}")
