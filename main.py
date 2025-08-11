@@ -1,6 +1,54 @@
-def main():
-    print("Hello from playwright-zchb!")
+import sys
+from fastapi import FastAPI, HTTPException
+from patchright.sync_api import sync_playwright
+from src.listorg.main import run as fetch_company_data # Import the refactored function
+from loguru import logger
 
+# Configure Loguru
+logger.remove()
+logger.add(sys.stderr, level="INFO")
+logger.add("logs/api_runs.log", rotation="1 day", level="INFO")
 
-if __name__ == "__main__":
-    main()
+app = FastAPI(
+    title="Company Data API",
+    description="An API to fetch company card and financial data from list-org.com",
+    version="1.0.0"
+)
+
+@app.get('/company_card/{inn}')
+def get_company_card(inn: str):
+    """
+    Retrieves general company information (card) for a given INN.
+    This includes registration data and main activity.
+    """
+    logger.info(f"Received request for company_card with INN: {inn}")
+    try:
+        with sync_playwright() as playwright:
+            data = fetch_company_data(playwright, inn, method='card')
+            if data.get("error"):
+                raise HTTPException(status_code=404, detail=data["error"])
+            return {'success': True, 'data': data}
+    except Exception as e:
+        logger.error(f"Failed to process company_card for INN {inn}: {e}")
+        # Re-raise as HTTPException to send a proper error response
+        raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
+
+@app.get('/company_finances/{inn}')
+def get_company_finances(inn: str):
+    """
+    Retrieves financial data for a given INN.
+    """
+    logger.info(f"Received request for company_finances with INN: {inn}")
+    try:
+        with sync_playwright() as playwright:
+            data = fetch_company_data(playwright, inn, method='finances')
+            if data.get("error"):
+                raise HTTPException(status_code=404, detail=data["error"])
+            return {'success': True, 'data': data}
+    except Exception as e:
+        logger.error(f"Failed to process company_finances for INN {inn}: {e}")
+        raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
+
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to the Company Data API. Visit /docs for documentation."}

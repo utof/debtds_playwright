@@ -9,4 +9,6 @@ dependencies = [
     "loguru>=0.7.3",
     "patchright>=1.52.5",
     "python-dotenv>=1.1.1",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
 ]
