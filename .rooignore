@@ -8,6 +8,6 @@ datadir
 *.html
 *.png
 debug
-
+.env
 
 senenium.py

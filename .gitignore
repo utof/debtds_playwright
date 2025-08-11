@@ -8,3 +8,4 @@ datadir
 *.html
 *.png
 debug
+.env
