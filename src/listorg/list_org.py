@@ -2,10 +2,11 @@ import re
 from patchright.sync_api import Playwright, sync_playwright, expect
 from flows import extract_main_activity,  find_company_data, parse_financial_data, handle_captcha
 from utils import process_inn
+from loguru import logger
 
 def run(playwright: Playwright, inn: str) -> None:
     inn = process_inn(inn)
-    print(f"preprocessed INN: {inn}")
+    logger.info(f"preprocessed INN: {inn}")
     browser = playwright.chromium.launch(headless=False)
     context = browser.new_context()
     page = browser.new_page()
@@ -16,7 +17,7 @@ def run(playwright: Playwright, inn: str) -> None:
     no_results_locator = page.locator("p:has-text('Найдено 0 организаций')")
     if no_results_locator.count() > 0:
         message = "Найдено 0 организаций с таким ИНН"
-        print(message)
+        logger.info(message)
         page.close()
         context.close()
         browser.close()
@@ -50,5 +51,16 @@ def run(playwright: Playwright, inn: str) -> None:
 
 if __name__ == "__main__":
     inn = "1400013278"
-    with sync_playwright() as playwright:
-        run(playwright, inn)
+    logger.add("data/logs/runs.log", rotation="1 day", level="INFO")
+    try:
+        with sync_playwright() as playwright:
+            run(playwright, inn)
+    except Exception as e:
+        logger.exception(f"Unhandled exception in main execution: {e}")
+        # Save error details to timestamped file
+        os.makedirs("data/error_logs", exist_ok=True)
+        timestamp = logger._get_current_datetime().strftime("%Y%m%d_%H%M%S")
+        error_file = f"data/error_logs/error_{timestamp}.log"
+        logger.add(error_file, level="ERROR")
+        logger.error(f"Error details: {e}")
+        raise

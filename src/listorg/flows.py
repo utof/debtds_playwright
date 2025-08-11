@@ -3,6 +3,7 @@ from patchright.sync_api import Page
 from dotenv import load_dotenv
 import os
 from twocaptcha import TwoCaptcha
+from loguru import logger
 
 load_dotenv()
 
@@ -140,6 +141,7 @@ def parse_financial_data(page: Page, target_indicators: list[str] | None = None)
     if target_indicators:
         # Optimized path: Search only for the specified indicators
         for indicator_name in target_indicators:
+            logger.info(f"Processing {indicator_name}")
             # Locate the row by finding the link with the exact indicator name
             row_locator = table_locator.locator(f'tr:has(a:text-is("{indicator_name}"))')
             
@@ -176,7 +178,7 @@ def handle_captcha(page: Page):
     """
     captcha_locator = page.locator("span.h1:has-text('Проверка, что Вы не робот')")
     if captcha_locator.count() > 0:
-        print("Captcha detected, attempting to solve...")
+        logger.info("Captcha detected, attempting to solve...")
         
         # 1. Get website details for 2Captcha
         website_url = page.url
@@ -184,7 +186,7 @@ def handle_captcha(page: Page):
         sitekey = sitekey_locator.get_attribute("data-sitekey")
 
         if not sitekey:
-            print("Could not find reCAPTCHA sitekey.")
+            logger.warning("Could not find reCAPTCHA sitekey.")
             return
 
         # 2. Solve reCAPTCHA using 2Captcha
@@ -196,22 +198,22 @@ def handle_captcha(page: Page):
         solver = TwoCaptcha(api_key)
         
         try:
-            print(f"Submitting captcha to 2Captcha for URL: {website_url} with sitekey: {sitekey}")
+            logger.info(f"Submitting captcha to 2Captcha for URL: {website_url} with sitekey: {sitekey}")
             result = solver.recaptcha(sitekey=sitekey, url=website_url)
             
             if result and 'code' in result:
                 token = result['code']
-                print("Captcha solved, token received.")
+                logger.info("Captcha solved, token received.")
                 
                 # 3. Inject the token and submit the form
                 page.evaluate(f"document.getElementById('g-recaptcha-response').innerHTML = '{token}';")
                 page.locator('input[type="submit"][name="submit"]').click()
                 
-                print("Submitted captcha. Waiting for navigation...")
+                logger.info("Submitted captcha. Waiting for navigation...")
                 page.wait_for_load_state('domcontentloaded', timeout=60000)
-                print("Page reloaded after captcha.")
+                logger.info("Page reloaded after captcha.")
             else:
-                print("2Captcha did not return a valid solution.")
+                logger.warning("2Captcha did not return a valid solution.")
 
         except Exception as e:
-            print(f"An error occurred while solving captcha: {e}")
+            logger.error(f"An error occurred while solving captcha: {e}")
