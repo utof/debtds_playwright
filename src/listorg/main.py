@@ -1,4 +1,4 @@
-from patchright.sync_api import Playwright
+from patchright.sync_api import sync_playwright, Browser as PlaywrightBrowser
 
 
 # Assuming these helper functions are in sibling files (e.g., src/listorg/flows.py)
@@ -8,12 +8,14 @@ from loguru import logger
 import os
 import datetime
 
-def run(playwright: Playwright, inn: str, method: str) -> dict:
+from ..browser import Browser
+
+def run(browser: PlaywrightBrowser, inn: str, method: str) -> dict:
     """
     Scrapes company data from list-org.com based on the INN.
 
     Args:
-        playwright: The Playwright instance.
+        browser: The Playwright browser instance.
         inn: The company's INN.
         method: The type of data to retrieve ('card' or 'finances').
 
@@ -23,9 +25,8 @@ def run(playwright: Playwright, inn: str, method: str) -> dict:
     inn = process_inn(inn)
     logger.info(f"Processing INN: {inn} for method: {method}")
 
-    browser = playwright.chromium.launch(headless=True) # Recommended to run headless for API
     page = browser.new_page()
-    logger.debug("Browser launched and new page created.")
+    logger.debug("New page created.")
 
     try:
         page.goto(f"https://www.list-org.com/search?val={inn}", wait_until='domcontentloaded')
@@ -66,5 +67,25 @@ def run(playwright: Playwright, inn: str, method: str) -> dict:
         return {"error": str(e)}
     
     finally:
-        browser.close()
-        logger.debug("Browser closed.")
+        page.close()
+        logger.debug("Page closed.")
+
+
+if __name__ == "__main__":
+    inn = "1400013278"
+    logger.add("data/logs/runs.log", rotation="1 day", level="INFO")
+    try:
+        with Browser() as browser:
+            jsonn = run(browser, inn, "card")
+            with open(f"{inn}_financial_data.json", "w", encoding="utf-8") as f:
+                import json
+                json.dump(jsonn, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logger.exception(f"Unhandled exception in main execution: {e}")
+        # Save error details to timestamped file
+        os.makedirs("data/error_logs", exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        error_file = f"data/error_logs/error_{timestamp}.log"
+        logger.add(error_file, level="ERROR")
+        logger.error(f"Error details: {e}")
+        raise

@@ -1,8 +1,8 @@
 import sys
 from fastapi import FastAPI, HTTPException
-from patchright.sync_api import sync_playwright
 from src.listorg.main import run as fetch_company_data # Import the refactored function
 from loguru import logger
+from src.browser import Browser
 
 # Configure Loguru
 logger.remove()
@@ -23,14 +23,16 @@ def get_company_card(inn: str):
     """
     logger.info(f"Received request for company_card with INN: {inn}")
     try:
-        with sync_playwright() as playwright:
-            data = fetch_company_data(playwright, inn, method='card')
+        with Browser(headless=True) as browser:
+            data = fetch_company_data(browser, inn, method='card')
             if data.get("error"):
                 raise HTTPException(status_code=404, detail=data["error"])
             return {'success': True, 'data': data}
     except Exception as e:
         logger.error(f"Failed to process company_card for INN {inn}: {e}")
         # Re-raise as HTTPException to send a proper error response
+        if isinstance(e, HTTPException):
+            raise e
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
 
 @app.get('/company_finances/{inn}')
@@ -40,13 +42,15 @@ def get_company_finances(inn: str):
     """
     logger.info(f"Received request for company_finances with INN: {inn}")
     try:
-        with sync_playwright() as playwright:
-            data = fetch_company_data(playwright, inn, method='finances')
+        with Browser(headless=True) as browser:
+            data = fetch_company_data(browser, inn, method='finances')
             if data.get("error"):
                 raise HTTPException(status_code=404, detail=data["error"])
             return {'success': True, 'data': data}
     except Exception as e:
         logger.error(f"Failed to process company_finances for INN {inn}: {e}")
+        if isinstance(e, HTTPException):
+            raise e
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
 
 @app.get("/")
