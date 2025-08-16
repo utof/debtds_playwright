@@ -1,165 +1,194 @@
-from __future__ import annotations
-
 import re
-import logging
-from time import sleep
-from typing import Literal, TypedDict
+from patchright.sync_api import Page
+from loguru import logger
 
-# from playwright.sync_api import Page, expect, TimeoutError as PlaywrightTimeoutError
-from patchright.sync_api import Page, expect, TimeoutError as PlaywrightTimeoutError
+def click_beneficiaries(page: Page) -> bool:
+    """
+    Finds and clicks the link to open the beneficiaries modal.
 
-from .config import BASE_URL, DEFAULT_TIMEOUT_MS, NAVIGATION_TIMEOUT_MS, MAX_RETRIES, RETRY_BACKOFF_MS, ENABLE_RESULTS_READY_WAIT, RESULTS_READY_SELECTOR, RESULTS_READY_TIMEOUT_MS
-from .locators import searchbox, submit_button, first_company_result_link, overview_heading, zero_results_banner
-from .utils import ddos_gate_if_needed, await_idle, dump_debug, goto, ensure_visible, results_ready, flow_step, ok, fail
+    It waits for the modal to become visible after the click.
 
+    Args:
+        page: The Playwright page object.
 
-class StepResult(TypedDict):
-    status: Literal["ok", "no_results", "timeout", "captcha_suspected", "missing_overview", "error"]
-    message: str
-    url: str
-    overview_text: str | None
+    Returns:
+        True if the link was clicked and the modal appeared, False otherwise.
+    """
+    # This selector is very specific, targeting the link by its exact data-title.
+    link_locator = page.locator('a[data-title="Бенефициары"]')
+    
+    if link_locator.count() == 0:
+        logger.warning("The 'Beneficiaries' link was not found on the page.")
+        return False
 
-
-@flow_step("open_home")
-def open_home(page: Page) -> dict:
-    # Centralized navigation: goto + await_idle + optional DDOS gate
-    goto(page, BASE_URL, wait_until="networkidle", ddos_search_selector='role=searchbox', apply_ddos_gate=True)
-    return ok("home opened", page.url)
-
-
-@flow_step("submit_search")
-def submit_search(page: Page, inn: str) -> StepResult:
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            logging.info("inn=%s step=fill_search attempt=%d", inn, attempt)
-            # Ensure page settled and search is visible before interaction
-            await_idle(page)
-            sb = searchbox(page)
-            ensure_visible(sb, timeout_ms=DEFAULT_TIMEOUT_MS)
-            sb.click()
-            sb.fill(inn)
-
-            logging.info("inn=%s step=submit attempt=%d", inn, attempt)
-            submit = submit_button(page)
-            ensure_visible(submit, timeout_ms=DEFAULT_TIMEOUT_MS)
-            submit.click()
-            # Settle after submit before querying results
-            await_idle(page)
-            # Optional, targeted results readiness wait (simple, opt-in via config)
-            if ENABLE_RESULTS_READY_WAIT:
-                if results_ready(page, RESULTS_READY_SELECTOR, timeout_ms=RESULTS_READY_TIMEOUT_MS):
-                    logging.info("inn=%s step=results_ready outcome=ok", inn)
-                else:
-                    logging.info("inn=%s step=results_ready outcome=timeout", inn)
-
-            # Either we land on results or directly on company
-            # Quick zero-results detection on the same page (some sites update results dynamically)
-            try:
-                if zero_results_banner(page).is_visible():
-                    logging.info("inn=%s step=zero_results_detected outcome=no_results", inn)
-                    return fail("no_results", "zero results banner visible", page.url)
-            except PlaywrightTimeoutError:
-                pass
-            except Exception:
-                pass
-
-            # If a result link exists, click and then expect company URL
-            await_idle(page)
-            link = first_company_result_link(page)
-            cnt = link.count()
-            logging.info("inn=%s step=result_link_count count=%d", inn, cnt)
-            if cnt == 0:
-                # Give results a moment if they render dynamically
-                page.wait_for_timeout(500)
-                cnt = link.count()
-                logging.info("inn=%s step=result_link_count_after_wait count=%d", inn, cnt)
-                if cnt == 0:
-                    # Dump a minimal debug snapshot to understand current state
-                    try:
-                        dump_debug(page, "no_result_links_after_submit")
-                    except Exception:
-                        pass
-            if cnt > 0:
-                link.click()
-                logging.info("inn=%s step=company_link_click outcome=clicked", inn)
-                await_idle(page)
-
-            # Expect company URL (still succeeds if we were redirected directly)
-            expect(page).to_have_url(re.compile(r"/company/ul/"), timeout=NAVIGATION_TIMEOUT_MS)
-            logging.info("inn=%s step=url_assertion outcome=ok url=%s", inn, page.url)
-            return ok("navigated to company page", page.url)
-
-        except PlaywrightTimeoutError as e:
-            # Still honor existing retry loop but keep it smaller
-            try:
-                dump_debug(page, "timeout_in_submit_search")
-            except Exception:
-                pass
-            if attempt == MAX_RETRIES:
-                return fail("timeout", "navigation/search timeout", page.url)
-            sleep(RETRY_BACKOFF_MS / 1000.0)
-        except Exception as e:
-            # Heuristic captcha suspicion: page blocked or unexpected interstitial
-            if "captcha" in (str(e).lower()):
-                return fail("captcha_suspected", str(e), page.url)
-            if attempt == MAX_RETRIES:
-                return fail("error", str(e), page.url)
-            sleep(RETRY_BACKOFF_MS / 1000.0)
-
-    return {"status": "error", "message": "unreachable state", "url": page.url, "overview_text": None}
-
-
-@flow_step("extract_overview")
-def extract_overview(page: Page, inn: str) -> StepResult:
     try:
-        # Ensure heading is visible
-        hd = overview_heading(page)
-        hd.wait_for(state="visible", timeout=DEFAULT_TIMEOUT_MS)
-
-        # Get first following div's innerText
-        h_el = hd.element_handle()
-        if not h_el:
-            return fail("missing_overview", "heading handle missing", page.url)
-
-        text = page.evaluate(
-            """(h) => {
-                let n = h.nextElementSibling;
-                while (n) {
-                  if (n.tagName && n.tagName.toLowerCase() === 'div') {
-                    return n.innerText || '';
-                  }
-                  n = n.nextElementSibling;
-                }
-                return '';
-            }""",
-            h_el,
-        ) or ""
-
-        text = text.strip()
-        if not text:
-            return fail("missing_overview", "no following div text", page.url)
-
-        return ok("extracted overview", page.url, overview_text=text)
-    except PlaywrightTimeoutError as e:
-        logging.warning("inn=%s step=extract_overview outcome=timeout msg=%s", inn, str(e))
-        return {"status": "timeout", "message": "overview timeout", "url": page.url, "overview_text": None}
+        logger.info("Clicking the 'Beneficiaries' link...")
+        link_locator.click()
+        
+        # Wait for the modal to appear. We identify it by its title.
+        modal_title_locator = page.locator("div.modal-title:text-is('Бенефициары')")
+        modal_title_locator.wait_for(state="visible", timeout=5000)
+        
+        logger.success("Successfully clicked the link and the beneficiaries modal is visible.")
+        return True
+    except TimeoutError:
+        logger.error("Timed out waiting for the beneficiaries modal to appear after clicking the link.")
+        return False
     except Exception as e:
-        msg = str(e)
-        outcome: Literal["error", "captcha_suspected"] = "captcha_suspected" if "captcha" in msg.lower() else "error"
-        logging.warning("inn=%s step=extract_overview outcome=%s msg=%s", inn, outcome, msg)
-        return {"status": outcome, "message": msg, "url": page.url, "overview_text": None}
+        logger.error(f"An error occurred while trying to open the beneficiaries modal: {e}")
+        return False
 
+def click_ceos(page: Page) -> bool:
+    """
+    Finds and clicks the link to open the CEO history modal.
 
-def search_and_extract(page: Page, inn: str) -> StepResult:
+    It waits for the modal to become visible after the click.
+
+    Args:
+        page: The Playwright page object.
+
+    Returns:
+        True if the link was clicked and the modal appeared, False otherwise.
     """
-    High-level flow for one INN:
-      - ensure on home
-      - submit search
-      - if ok, extract overview
-      - else, return the status as-is
+    # Use a 'starts-with' selector for the data-title to make it more robust,
+    # as the company name might change.
+    link_locator = page.locator('a[data-title^="История изменений руководителей"]')
+    
+    if link_locator.count() == 0:
+        logger.warning("The 'CEO History' link was not found on the page.")
+        return False
+
+    try:
+        logger.info("Clicking the 'CEO History' link...")
+        link_locator.click()
+
+        # Wait for the modal, identified by its title, to become visible.
+        modal_title_locator = page.locator("div.modal-title:has-text('История изменений руководителей')")
+        modal_title_locator.wait_for(state="visible", timeout=5000)
+
+        logger.success("Successfully clicked the link and the CEO history modal is visible.")
+        return True
+    except TimeoutError:
+        logger.error("Timed out waiting for the CEO history modal to appear after clicking the link.")
+        return False
+    except Exception as e:
+        logger.error(f"An error occurred while trying to open the CEO history modal: {e}")
+        return False
+
+def extract_beneficiaries(page: Page) -> dict:
     """
-    open_home(page)
-    submit_res = submit_search(page, inn)
-    if submit_res.get("status") != "ok":
-        return submit_res
-    return extract_overview(page, inn)
+    Finds the 'Бенефициары' (Beneficiaries) modal on the page and extracts data from its table.
+
+    This function specifically targets the modal by its title, making the selector robust.
+    If the modal or table is not found, it returns an empty dictionary.
+
+    Args:
+        page: The Playwright page object.
+
+    Returns:
+        A dictionary of beneficiaries, keyed by their row number.
+        Example: {"1": {"фио": "Иванов Иван", "связь": "Прямая", "инн": "123...", "доля": "100%"}}
+    """
+    beneficiaries = {}
+    
+    # Locate the modal by finding the header that contains the exact text "Бенефициары"
+    # and then navigate up to the main modal content container.
+    modal_locator = page.locator("div.modal-content:has(div.modal-title:text-is('Бенефициары'))")
+
+    if modal_locator.count() == 0:
+        logger.info("Beneficiaries modal not found on the page.")
+        return {}
+        
+    # Find all data rows (tr) in the table, skipping the header row (th)
+    rows = modal_locator.locator("table.founders-table tbody tr:has(td)").all()
+
+    if not rows:
+        logger.warning("Beneficiaries table found, but it contains no data rows.")
+        return {}
+
+    for row in rows:
+        cells = row.locator("td").all()
+        if len(cells) >= 5:
+            try:
+                row_num = (cells[0].text_content() or "").strip()
+                fio = (cells[1].locator("a").first.text_content() or "").strip()
+                svyaz = (cells[2].text_content() or "").strip()
+                inn = (cells[3].text_content() or "").strip()
+                dolya = (cells[4].text_content() or "").strip()
+
+                if row_num:
+                    beneficiaries[row_num] = {
+                        "фио": fio,
+                        "связь": svyaz,
+                        "инн": inn,
+                        "доля": dolya
+                    }
+            except Exception as e:
+                logger.error(f"Could not parse a beneficiary row. HTML: {row.inner_html()}. Error: {e}")
+
+    logger.info(f"Extracted {len(beneficiaries)} beneficiaries.")
+    return beneficiaries
+
+def extract_ceos(page: Page) -> dict:
+    """
+    Finds the modal for 'История изменений руководителей' (History of CEO changes)
+    and extracts the data, organizing it by date.
+
+    Args:
+        page: The Playwright page object.
+
+    Returns:
+        A dictionary where keys are dates and values are lists of CEOs for that date.
+        Example: {"21.03.2025": [{"должность": "КОНКУРСНЫЙ УПРАВЛЯЮЩИЙ", ...}]}
+    """
+    ceos_by_date = {}
+    
+    # Locate the modal by its unique title text
+    modal_locator = page.locator("div.modal-content:has(div.modal-title:has-text('История изменений руководителей'))")
+    
+    if modal_locator.count() == 0:
+        logger.info("CEO history modal not found on the page.")
+        return {}
+        
+    # The data is structured in separate tbody elements, one for each date.
+    date_chunks = modal_locator.locator("tbody[id*='history-founder-chunk-']").all()
+
+    if not date_chunks:
+        logger.warning("CEO history modal found, but no date chunks were located.")
+        return {}
+
+    for chunk in date_chunks:
+        # Extract the date from the first row of the chunk
+        date_row = chunk.locator("tr.attr-date").first
+        date_anchor = date_row.locator("a[href*='/ordering?date=']").first
+        
+        if date_anchor.count() == 0:
+            continue
+            
+        date_str = (date_anchor.text_content() or "").strip()
+        
+        # Find all actual data rows within this chunk
+        data_rows = chunk.locator("tr:not(.attr-date)").all()
+        
+        if date_str not in ceos_by_date:
+            ceos_by_date[date_str] = []
+
+        for row in data_rows:
+            cells = row.locator("td").all()
+            if len(cells) >= 4:
+                try:
+                    # Extract data using the 'data-th' attribute as a fallback guide
+                    position = (cells[1].text_content() or "").strip()
+                    name = (cells[2].text_content() or "").strip()
+                    inn = (cells[3].text_content() or "").strip()
+
+                    ceos_by_date[date_str].append({
+                        "должность": position,
+                        "руководитель": name,
+                        "инн": inn
+                    })
+                except Exception as e:
+                    logger.error(f"Could not parse a CEO row. HTML: {row.inner_html()}. Error: {e}")
+
+    logger.info(f"Extracted CEO history for {len(ceos_by_date)} dates.")
+    return ceos_by_date

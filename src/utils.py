@@ -17,7 +17,7 @@ def calculate_financial_coefficients(financial_data: dict) -> dict:
     # Define the required financial codes for calculation
     required_codes = [
         'Ф1.1200', 'Ф1.1240', 'Ф1.1250', 'Ф1.1400', 
-        'Ф1.1500', 'Ф1.1520', 'Ф1.1530', 'Ф1.1600'
+        'Ф1.1500', 'Ф1.1520', 'Ф1.1530', 'Ф1.1600', 'Ф2.2000'
     ]
 
     # Check if the main 'financials' key exists
@@ -60,6 +60,7 @@ def calculate_financial_coefficients(financial_data: dict) -> dict:
         v1240 = get_value('Ф1.1240', year)  # Финансовые вложения
         v1200 = get_value('Ф1.1200', year)  # Оборотные активы
         v1520 = get_value('Ф1.1520', year)  # Кредиторская задолженность
+        v2000 = get_value('Ф2.2000', year)  # Убытки
 
         # Perform calculations
         try:
@@ -84,6 +85,7 @@ def calculate_financial_coefficients(financial_data: dict) -> dict:
                 "current_liquidity_ratio": cur_liq_ratio,
                 "asset_liability_ratio": asset_lia_ratio,
                 "solvency_ratio": solvency_ratio,
+                "losses": v2000
             }
             logger.info(f"Successfully calculated coefficients for {year}.")
 
