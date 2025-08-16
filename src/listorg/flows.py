@@ -120,6 +120,7 @@ def parse_financial_data(page: Page, target_indicators: list[str] | None = None)
     if report_link_locator.count() == 0:
         logger.warning("No report link found on the page.")
         return {}
+    
     report_url = f"{page.url.rstrip('/')}/report"
     page.goto(report_url, wait_until="domcontentloaded")
     
@@ -146,24 +147,34 @@ def parse_financial_data(page: Page, target_indicators: list[str] | None = None)
     financial_data = {}
 
     def parse_row(row_locator) -> tuple[str | None, dict | None]:
-        """Helper function to parse a single row locator."""
-        cells = row_locator.locator("td").all()
-        if not cells or len(cells) < len(years) + 3:
+        """
+        Helper function to parse a single row locator.
+        This is now more robust and doesn't rely on fixed cell indices for code/name.
+        """
+        all_cells = row_locator.locator("td").all()
+        if not all_cells or len(all_cells) < len(years) + 3:
             return None, None
-            
-        code = (cells[0].text_content() or "").strip()
-        # Clean the name from any potential HTML tags inside, like <b>
-        name_html = (cells[1].inner_html() or "").strip()
+
+        # Explicitly find the code: the first 'td' with class 'tt_hide'
+        code_cell = row_locator.locator("td.tt_hide").first
+        code = (code_cell.text_content() or "").strip()
+
+        # Explicitly find the name: the 'td' that contains an 'a' tag
+        name_cell = row_locator.locator("td > a").first
+        name_html = (name_cell.inner_html() or "").strip()
         name = re.sub('<[^<]+?>', '', name_html).strip()
 
         if not code or not name:
+            logger.warning(f"Could not parse code or name for a row. HTML: {row_locator.inner_html()}")
             return None, None
 
+        # Data cells start after the first three columns (code, name, unit)
+        data_cells = all_cells[3:]
         values = {}
-        data_cells = cells[3:]
         for i, year in enumerate(years):
-            value = (data_cells[i].text_content() or "").strip()
-            values[year] = value
+            if i < len(data_cells):
+                value = (data_cells[i].text_content() or "").strip()
+                values[year] = value
         
         return code, {"name": name, "values": values}
 
@@ -171,16 +182,19 @@ def parse_financial_data(page: Page, target_indicators: list[str] | None = None)
         # Optimized path: Search only for the specified indicators by name or code
         for indicator in target_indicators:
             logger.info(f"Processing target indicator: {indicator}")
-            # Try locating by name first, then by code
-            row_locator_by_name = table_locator.locator(f'tr:has(a:text-is("{indicator}"))')
-            row_locator_by_code = table_locator.locator(f'tr:has(td:text-is("{indicator}"))')
             
-            row_locator = row_locator_by_name if row_locator_by_name.count() > 0 else row_locator_by_code
-
+            # *** FIXED SELECTOR SYNTAX HERE ***
+            # Use a comma for OR condition, separating two full selectors.
+            selector = f'tr:has(a:text-is("{indicator}")), tr:has(td.tt_hide:text-is("{indicator}"))'
+            row_locator = table_locator.locator(selector).first
+            
             if row_locator.count() > 0:
-                code, data = parse_row(row_locator.first)
+                code, data = parse_row(row_locator)
                 if code and data:
                     financial_data[code] = data
+            else:
+                logger.warning(f"Could not find row for target indicator: {indicator}")
+
     else:
         # Original path: Iterate through all rows
         rows = table_locator.locator("tbody > tr").all()
@@ -188,6 +202,10 @@ def parse_financial_data(page: Page, target_indicators: list[str] | None = None)
             if "Другие показатели:" in row.inner_text():
                 break
             
+            # Skip header-like rows that don't contain the necessary structure
+            if row.locator("td.tt_hide").count() == 0 or row.locator("td > a").count() == 0:
+                continue
+
             code, data = parse_row(row)
             if code and data:
                 financial_data[code] = data
