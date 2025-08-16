@@ -2,13 +2,13 @@ from patchright.sync_api import sync_playwright, Browser as PlaywrightBrowser
 
 
 # Assuming these helper functions are in sibling files (e.g., src/listorg/flows.py)
-from flows import extract_main_activity, find_company_data, parse_financial_data, handle_captcha
-from utils import process_inn
+from .flows import extract_main_activity, find_company_data, parse_financial_data, handle_captcha
+from .utils import process_inn
 from loguru import logger
 import os
 import datetime
 
-from src.browser import Browser
+from ..browser import Browser
 
 def run(browser: PlaywrightBrowser, inn: str, method: str) -> dict:
     """
@@ -76,7 +76,7 @@ if __name__ == "__main__":
     logger.add("data/logs/runs.log", rotation="1 day", level="INFO")
     try:
         with Browser() as browser:
-            jsonn = run(browser, inn, "finances")
+            jsonn = run(browser, inn, "card")
             with open(f"{inn}_financial_data.json", "w", encoding="utf-8") as f:
                 import json
                 json.dump(jsonn, f, ensure_ascii=False, indent=4)
