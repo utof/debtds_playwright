@@ -104,27 +104,33 @@ def extract_main_activity(page: Page) -> dict:
 def parse_financial_data(page: Page, target_indicators: list[str] | None = None) -> dict:
     """
     Parses the financial data table from the company's report page.
+    The data is keyed by the financial indicator code.
 
     Args:
         page: The Playwright page object, on a company's main page.
-        target_indicators: An optional list of financial indicators to parse.
+        target_indicators: An optional list of financial indicators (names or codes) to parse.
                            If provided, the function will only search for and extract these indicators.
                            If None (default), it parses all available indicators.
 
     Returns:
-        A dictionary with financial indicators and their values over the years.
-        Example: {'Выручка': {'2023': '94208', '2022': '24755'}}
+        A dictionary with financial indicators and their values over the years, keyed by indicator code.
+        Example: {'Ф2.2110': {'name': 'Выручка', 'values': {'2023': '94208', '2022': '24755'}}}
     """
     report_link_locator = page.locator('a[href*="/report"]')
     if report_link_locator.count() == 0:
+        logger.warning("No report link found on the page.")
         return {}
     report_url = f"{page.url.rstrip('/')}/report"
     page.goto(report_url, wait_until="domcontentloaded")
     
     handle_captcha(page) # Check for captcha on the report page
 
-    table_locator = page.locator("table#rep_table")
-    table_locator.wait_for(timeout=10000)
+    try:
+        table_locator = page.locator("table#rep_table")
+        table_locator.wait_for(timeout=10000)
+    except Exception:
+        logger.error("Financial report table (#rep_table) not found on the page.")
+        return {}
 
     # Extract years from the header row
     header_row = table_locator.locator('tr:has-text("Показатель")').first
@@ -134,41 +140,57 @@ def parse_financial_data(page: Page, target_indicators: list[str] | None = None)
         pokazatel_index = header_cells.index('Показатель')
         years = [year.strip() for year in header_cells[pokazatel_index + 1:] if year.strip().isdigit()]
     except (ValueError, IndexError):
-        return {}  # Return empty if header structure is not as expected
+        logger.error("Could not parse years from the table header.")
+        return {}
 
     financial_data = {}
 
-    if target_indicators:
-        # Optimized path: Search only for the specified indicators
-        for indicator_name in target_indicators:
-            logger.info(f"Processing {indicator_name}")
-            # Locate the row by finding the link with the exact indicator name
-            row_locator = table_locator.locator(f'tr:has(a:text-is("{indicator_name}"))')
+    def parse_row(row_locator) -> tuple[str | None, dict | None]:
+        """Helper function to parse a single row locator."""
+        cells = row_locator.locator("td").all()
+        if not cells or len(cells) < len(years) + 3:
+            return None, None
             
+        code = (cells[0].text_content() or "").strip()
+        # Clean the name from any potential HTML tags inside, like <b>
+        name_html = (cells[1].inner_html() or "").strip()
+        name = re.sub('<[^<]+?>', '', name_html).strip()
+
+        if not code or not name:
+            return None, None
+
+        values = {}
+        data_cells = cells[3:]
+        for i, year in enumerate(years):
+            value = (data_cells[i].text_content() or "").strip()
+            values[year] = value
+        
+        return code, {"name": name, "values": values}
+
+    if target_indicators:
+        # Optimized path: Search only for the specified indicators by name or code
+        for indicator in target_indicators:
+            logger.info(f"Processing target indicator: {indicator}")
+            # Try locating by name first, then by code
+            row_locator_by_name = table_locator.locator(f'tr:has(a:text-is("{indicator}"))')
+            row_locator_by_code = table_locator.locator(f'tr:has(td:text-is("{indicator}"))')
+            
+            row_locator = row_locator_by_name if row_locator_by_name.count() > 0 else row_locator_by_code
+
             if row_locator.count() > 0:
-                cells = row_locator.first.locator("td").all()
-                if len(cells) == len(years) + 3:
-                    financial_data[indicator_name] = {}
-                    data_cells = cells[3:]
-                    for i, year in enumerate(years):
-                        value = (data_cells[i].text_content() or "").strip()
-                        financial_data[indicator_name][year] = value
+                code, data = parse_row(row_locator.first)
+                if code and data:
+                    financial_data[code] = data
     else:
         # Original path: Iterate through all rows
         rows = table_locator.locator("tbody > tr").all()
         for row in rows:
             if "Другие показатели:" in row.inner_text():
                 break
-
-            cells = row.locator("td").all()
-            if len(cells) == len(years) + 3:
-                indicator_name = (cells[1].inner_text() or "").strip()
-                if indicator_name:
-                    financial_data[indicator_name] = {}
-                    data_cells = cells[3:]
-                    for i, year in enumerate(years):
-                        value = (data_cells[i].text_content() or "").strip()
-                        financial_data[indicator_name][year] = value
+            
+            code, data = parse_row(row)
+            if code and data:
+                financial_data[code] = data
     
     return financial_data
 

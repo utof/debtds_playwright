@@ -2,8 +2,8 @@ from patchright.sync_api import Playwright, sync_playwright
 
 
 # Assuming these helper functions are in sibling files (e.g., src/listorg/flows.py)
-from .flows import extract_main_activity, find_company_data, parse_financial_data, handle_captcha
-from .utils import process_inn
+from flows import extract_main_activity, find_company_data, parse_financial_data, handle_captcha
+from utils import process_inn
 from loguru import logger
 import os
 import datetime
@@ -75,7 +75,10 @@ if __name__ == "__main__":
     logger.add("data/logs/runs.log", rotation="1 day", level="INFO")
     try:
         with sync_playwright() as playwright:
-            run(playwright, inn)
+            jsonn = run(playwright, inn, "finances")
+            with open(f"{inn}_financial_data.json", "w", encoding="utf-8") as f:
+                import json
+                json.dump(jsonn, f, ensure_ascii=False, indent=4)
     except Exception as e:
         logger.exception(f"Unhandled exception in main execution: {e}")
         # Save error details to timestamped file
