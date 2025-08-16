@@ -1,4 +1,4 @@
-from patchright.sync_api import Playwright
+from patchright.sync_api import Playwright, sync_playwright
 
 
 # Assuming these helper functions are in sibling files (e.g., src/listorg/flows.py)
@@ -68,3 +68,20 @@ def run(playwright: Playwright, inn: str, method: str) -> dict:
     finally:
         browser.close()
         logger.debug("Browser closed.")
+
+
+if __name__ == "__main__":
+    inn = "1400013278"
+    logger.add("data/logs/runs.log", rotation="1 day", level="INFO")
+    try:
+        with sync_playwright() as playwright:
+            run(playwright, inn)
+    except Exception as e:
+        logger.exception(f"Unhandled exception in main execution: {e}")
+        # Save error details to timestamped file
+        os.makedirs("data/error_logs", exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        error_file = f"data/error_logs/error_{timestamp}.log"
+        logger.add(error_file, level="ERROR")
+        logger.error(f"Error details: {e}")
+        raise
