@@ -186,9 +186,9 @@ def parse_financial_data(page: Page, target_indicators: list[str] | None = None)
             # *** FIXED SELECTOR SYNTAX HERE ***
             # Use a comma for OR condition, separating two full selectors.
             selector = f'tr:has(a:text-is("{indicator}")), tr:has(td.tt_hide:text-is("{indicator}"))'
-            row_locator = table_locator.locator(selector).first
-            
-            if row_locator.count() > 0:
+            rows = table_locator.locator(selector)
+            if rows.count() > 0:
+                row_locator = rows.first
                 code, data = parse_row(row_locator)
                 if code and data:
                     financial_data[code] = data

@@ -41,6 +41,9 @@ def run(browser: PlaywrightBrowser, inn: str, method: str) -> dict:
         page.locator("a[href*='/company/']").first.click()
         page.wait_for_load_state("domcontentloaded")
         handle_captcha(page)
+        required_codes = [
+        'Ф1.1200', 'Ф1.1240', 'Ф1.1250', 'Ф1.1400', 
+        'Ф1.1500', 'Ф1.1520', 'Ф1.1530', 'Ф1.1600', 'Ф2.2000']
 
         # Execute logic based on the requested method
         if method == 'card':
@@ -52,7 +55,7 @@ def run(browser: PlaywrightBrowser, inn: str, method: str) -> dict:
             return result
         
         elif method == 'finances':
-            financial_data = parse_financial_data(page)
+            financial_data = parse_financial_data(page, required_codes)
             logger.info(f"Successfully retrieved financial data for INN: {inn}")
             return {"financials": financial_data}
         
@@ -76,7 +79,7 @@ if __name__ == "__main__":
     logger.add("data/logs/runs.log", rotation="1 day", level="INFO")
     try:
         with Browser() as browser:
-            jsonn = run(browser, inn, "card")
+            jsonn = run(browser, inn, "finances")
             with open(f"{inn}_financial_data.json", "w", encoding="utf-8") as f:
                 import json
                 json.dump(jsonn, f, ensure_ascii=False, indent=4)
