@@ -4,8 +4,7 @@ from loguru import logger
 
 def click_beneficiaries(page: Page) -> bool:
     """
-    Finds and clicks the link to open the beneficiaries modal.
-
+    Finds and clicks the link to open the beneficiaries modal using a robust selector.
     It waits for the modal to become visible after the click.
 
     Args:
@@ -14,8 +13,9 @@ def click_beneficiaries(page: Page) -> bool:
     Returns:
         True if the link was clicked and the modal appeared, False otherwise.
     """
-    # This selector is very specific, targeting the link by its exact data-title.
-    link_locator = page.locator('a[data-title="Бенефициары"]')
+    # UPDATED: Use the 'contains' attribute selector (*=) to find the link
+    # even if the data-title attribute contains complex HTML.
+    link_locator = page.locator('a[data-title*="Бенефициары"]')
     
     if link_locator.count() == 0:
         logger.warning("The 'Beneficiaries' link was not found on the page.")
@@ -23,21 +23,28 @@ def click_beneficiaries(page: Page) -> bool:
 
     try:
         logger.info("Clicking the 'Beneficiaries' link...")
-        link_locator.click()
+        link_locator.first.click()
         
         # Wait for the modal to appear. We identify it by its title.
-        modal_title_locator = page.locator("div.modal-title:text-is('Бенефициары')")
+        modal_title_locator = page.locator("div.modal-title:has-text('Бенефициары')")
         modal_title_locator.wait_for(state="visible", timeout=5000)
         
         logger.success("Successfully clicked the link and the beneficiaries modal is visible.")
         return True
     except TimeoutError:
-        logger.error("Timed out waiting for the beneficiaries modal to appear after clicking the link.")
+        # This can happen if the modal is a "premium feature" pop-up.
+        # We check for that specific case.
+        premium_modal = page.locator("div.modal-title:has-text('доступны в тарифах')")
+        if premium_modal.count() > 0:
+            logger.warning("Beneficiaries are a premium feature for this company. Cannot extract data.")
+            return False
+        logger.error("Timed out waiting for the beneficiaries modal to appear after clicking.")
         return False
     except Exception as e:
         logger.error(f"An error occurred while trying to open the beneficiaries modal: {e}")
         return False
-
+    
+    
 def click_ceos(page: Page) -> bool:
     """
     Finds and clicks the link to open the CEO history modal.
@@ -52,7 +59,7 @@ def click_ceos(page: Page) -> bool:
     """
     # Use a 'starts-with' selector for the data-title to make it more robust,
     # as the company name might change.
-    link_locator = page.locator('a[data-title^="История изменений руководителей"]')
+    link_locator = page.locator('a[data-title*="История изменений руководителей"]')
     
     if link_locator.count() == 0:
         logger.warning("The 'CEO History' link was not found on the page.")
@@ -145,6 +152,7 @@ def extract_ceos(page: Page) -> dict:
     
     # Locate the modal by its unique title text
     modal_locator = page.locator("div.modal-content:has(div.modal-title:has-text('История изменений руководителей'))")
+    # modal_locator = page.locator("История изменений руководителей")
     
     if modal_locator.count() == 0:
         logger.info("CEO history modal not found on the page.")

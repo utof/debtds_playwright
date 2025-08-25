@@ -3,7 +3,7 @@ from patchright.sync_api import sync_playwright, Browser as PlaywrightBrowser
 
 # Assuming these helper functions are in sibling files (e.g., src/listorg/flows.py)
 from .flows import extract_main_activity, find_company_data, parse_financial_data, handle_captcha
-from .utils import process_inn
+from ..utils import process_inn
 from loguru import logger
 import os
 import datetime

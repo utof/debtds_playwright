@@ -7,13 +7,12 @@ import datetime
 # Assuming flows.py and utils.py are in the same directory or a reachable path
 # Using relative imports to match the second file's style
 from .flows import (
-    handle_captcha, 
     click_ceos, 
     extract_ceos, 
     click_beneficiaries, 
     extract_beneficiaries
 )
-from .utils import process_inn
+from ..utils import process_inn
 # Assuming a Browser wrapper class exists in a parent directory, similar to the second file
 from ..browser import Browser
 
@@ -43,7 +42,7 @@ def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
         # 1. Navigate to the search page and handle captcha
         logger.info(f"Navigating to search page for INN: {inn}")
         page.goto(f"https://zachestnyibiznes.ru/search?query={inn}", wait_until='domcontentloaded')
-        handle_captcha(page)
+        # handle_captcha(page)
 
         # 2. Find the correct, visible link to the company page
         company_link_locator = page.locator(f'a[href*="/company/ul/"]:visible').first
@@ -56,7 +55,7 @@ def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
         logger.info("Company link found, navigating to company page.")
         company_link_locator.click()
         page.wait_for_load_state("domcontentloaded")
-        handle_captcha(page)
+        # handle_captcha(page)
         logger.success("Successfully navigated to the company page.")
 
         # 4. Process CEOs
@@ -93,7 +92,7 @@ def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
 
 if __name__ == "__main__":
     # Use an INN that is known to have the data you want to test
-    test_inn = "3123109532" # Example INN for Sberbank Technologies
+    test_inn = "3123109532"
     
     # Configure logger
     log_file = f"data/logs/test_runs_{datetime.datetime.now().strftime('%Y-%m-%d')}.log"
