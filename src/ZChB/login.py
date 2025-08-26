@@ -17,13 +17,12 @@ def login(page: Page) -> bool:
     - Navigate to site
     - Solve captcha if needed
     - Submit login form
-    - If "Вы вошли в Платный доступ" appears -> success
+    - Success if premium modal (#premiumloginmodal) appears and is dismissed
     """
 
     try:
         logger.info("Navigating to main page...")
         page.goto("https://zachestnyibiznes.ru/", wait_until="domcontentloaded", timeout=60000)
-
         captcha_handler.handle_browser_check(page, timeout=30)
 
         logger.info("Going to login page...")
@@ -39,18 +38,29 @@ def login(page: Page) -> bool:
         page.get_by_role("button", name="Войти").click()
         logger.info("Clicked 'Войти'.")
 
-        # Wait a bit for server response / redirect
-        time.sleep(3)
+        # Wait for modal or captcha
+        time.sleep(2)
         captcha_handler.handle_browser_check(page, timeout=20)
 
-        # Look for premium confirmation
+        # --- Premium modal handling ---
+        modal = page.locator("#premiumloginmodal")
         try:
-            premium_locator = page.get_by_text("Вы вошли в Платный доступ", exact=False)
-            premium_locator.wait_for(timeout=8000)
-            logger.success("Login successful: detected premium confirmation.")
+            modal.wait_for(state="visible", timeout=10000)
+            logger.success("Premium login modal detected.")
+
+            # Click "Понятно" to dismiss it
+            page.get_by_role("button", name="Понятно").click(timeout=3000)
+            logger.info("Dismissed premium modal.")
+
+            # Wait for modal to close
+            modal.wait_for(state="detached", timeout=8000)
+
+            # At this point you’re logged in
+            logger.success(f"Login successful as {LOGIN}")
             return True
+
         except TimeoutError:
-            logger.error("Did not see premium confirmation after login.")
+            logger.error("Premium login modal did not appear after login.")
             return False
 
     except Exception as e:
