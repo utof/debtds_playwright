@@ -3,45 +3,90 @@ from patchright.sync_api import Page
 from loguru import logger
 
 def click_beneficiaries(page: Page) -> bool:
-    """
-    Finds and clicks the link to open the beneficiaries modal using a robust selector.
-    It waits for the modal to become visible after the click.
-
-    Args:
-        page: The Playwright page object.
-
-    Returns:
-        True if the link was clicked and the modal appeared, False otherwise.
-    """
-    # UPDATED: Use the 'contains' attribute selector (*=) to find the link
-    # even if the data-title attribute contains complex HTML.
-    link_locator = page.locator('a[data-title*="Бенефициары"]')
-    
-    if link_locator.count() == 0:
-        logger.warning("The 'Beneficiaries' link was not found on the page.")
-        return False
-
     try:
-        logger.info("Clicking the 'Beneficiaries' link...")
-        link_locator.first.click()
-        
-        # Wait for the modal to appear. We identify it by its title.
-        modal_title_locator = page.locator("div.modal-title:has-text('Бенефициары')")
-        modal_title_locator.wait_for(state="visible", timeout=5000)
-        
-        logger.success("Successfully clicked the link and the beneficiaries modal is visible.")
+        # 0) Desktop layout and remove cookie overlay
+        page.set_viewport_size({"width": 1400, "height": 900})
+        try:
+            page.locator('#cookie-accept-button').click(timeout=1000)
+        except Exception:
+            pass  # banner might not be there
+
+        # 1) Scroll the section into view and produce real scroll events
+        header = page.locator("text=Бенефициары (Выгодоприобретатели)")
+        # If header not yet attached, wheel-scroll down until it appears
+        for _ in range(20):
+            if header.count() > 0:
+                break
+            page.mouse.wheel(0, 800)
+            page.wait_for_timeout(100)
+
+        if header.count() == 0:
+            # As a fallback, go near bottom to force more lazy loads
+            for _ in range(10):
+                page.mouse.wheel(0, 1200)
+                page.wait_for_timeout(100)
+
+        # Ensure it’s within viewport
+        if header.count():
+            header.first.scroll_into_view_if_needed(timeout=3000)
+
+        # 2) Wait a beat for their scroll-handler to issue Ajax
+        page.wait_for_timeout(300)
+
+        # 3) Try to find the link; allow wording variations
+        section = page.locator('#benefic_tree, .ajax-content[data-content*="/ajax/benefic-tree"]')
+        link = section.locator("a:has-text('Показать всех')")
+        if link.count() == 0:
+            link = section.locator("a").filter(has_text=re.compile(r"Показать\s+все(х)?", re.I))
+
+        # Give the lazy loader a few more scroll nudges if needed
+        for _ in range(6):
+            if link.count() > 0:
+                break
+            page.mouse.wheel(0, 600)
+            page.evaluate("window.dispatchEvent(new Event('scroll'))")
+            page.wait_for_timeout(150)
+
+        # 4) If still not there, force-inject via fetch (awaited)
+        if link.count() == 0:
+            page.evaluate("""
+                (async () => {
+                  const el = document.querySelector('#benefic_tree, .ajax-content[data-content*="/ajax/benefic-tree"]');
+                  if (!el) return;
+                  const url = el.getAttribute('data-content');
+                  if (!url) return;
+                  const resp = await fetch(url, { credentials: 'include' });
+                  const html = await resp.text();
+                  el.innerHTML = html;
+                })();
+            """)
+            page.wait_for_selector("#benefic_tree a:has-text('Показать всех'), .ajax-content[data-content*='/ajax/benefic-tree'] a:has-text('Показать всех')", timeout=8000)
+
+            # Refresh link locator after injection
+            link = section.locator("a:has-text('Показать всех')")
+
+        if link.count() == 0:
+            return False  # not loaded
+
+        # 5) Click link (JS click fallback in case something overlays)
+        try:
+            link.first.click(timeout=5000)
+        except TimeoutError:
+            link.first.evaluate("el => el.click()")
+
+        # 6) Wait for modal (either normal or premium)
+        page.wait_for_selector("#modal-template .modal-title", timeout=5000)
+
+        if page.locator("#modal-template .modal-title:has-text('Бенефициары')").count() > 0:
+            return True
+        if page.locator("#modal-template .modal-title:has-text('доступны в тарифах')").count() > 0:
+            return False  # premium-locked
+
         return True
+
     except TimeoutError:
-        # This can happen if the modal is a "premium feature" pop-up.
-        # We check for that specific case.
-        premium_modal = page.locator("div.modal-title:has-text('доступны в тарифах')")
-        if premium_modal.count() > 0:
-            logger.warning("Beneficiaries are a premium feature for this company. Cannot extract data.")
-            return False
-        logger.error("Timed out waiting for the beneficiaries modal to appear after clicking.")
         return False
-    except Exception as e:
-        logger.error(f"An error occurred while trying to open the beneficiaries modal: {e}")
+    except Exception:
         return False
     
     
