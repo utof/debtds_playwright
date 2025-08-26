@@ -260,3 +260,54 @@ def extract_ceos(page: Page) -> dict:
 
     logger.info(f"Extracted CEO history for {len(ceos_by_date)} dates.")
     return ceos_by_date
+
+
+def extract_employees_by_year(page) -> dict:
+    """
+    Extracts employee counts year by year from the div#sshr-collapse.
+
+    Returns:
+        dict like: {"2018": 14, "2019": 13, "2020": 11, "2021": 9, "2022": 8}
+    """
+    employees_by_year = {}
+
+    try:
+        collapse = page.locator("div#sshr-collapse")
+        collapse.wait_for(state="attached", timeout=5000)
+    except Exception:
+        logger.warning("Employee collapse div (#sshr-collapse) not found.")
+        return {}
+
+    year_rows = collapse.locator("div").all()
+    if not year_rows:
+        logger.warning("No year rows found under #sshr-collapse.")
+        return {}
+
+    for row in year_rows:
+        try:
+            year_span = row.locator("span.text-gray").first
+            year_text = (year_span.text_content() or "").strip()
+            year = year_text if year_text.isdigit() else None
+            if not year:
+                continue
+
+            # Extract all text and filter out year & +/- info
+            row_text = " ".join((row.text_content() or "").split())
+            # Example row_text: "2022 8 -1 чел."
+            parts = row_text.split()
+            # first part = year, second part = employee count
+            count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+
+            if count is not None:
+                employees_by_year[year] = count
+        except Exception as e:
+            logger.error(f"Failed to parse employee row: {row.inner_html()}. Error: {e}")
+
+    # Sort dict by year (ascending = oldest first)
+    employees_by_year = {
+        k: employees_by_year[k]
+        for k in sorted(employees_by_year.keys(), key=int)
+    }
+
+    logger.info(f"Extracted employees by year: {employees_by_year}")
+    return employees_by_year

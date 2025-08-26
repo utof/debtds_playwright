@@ -9,6 +9,7 @@ from .flows import (
     extract_ceos, 
     click_beneficiaries, 
     extract_beneficiaries,
+    extract_employees_by_year
 )
 from .login import login
 from .court_debts import extract_defendant_in_progress
@@ -69,6 +70,8 @@ def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
         else:
             logger.warning("Could not open or find the beneficiaries modal.")
 
+        results["employees_by_year"] = extract_employees_by_year(page)
+        
         # + new extraction (no modal)
         results["defendant_in_progress"] = extract_defendant_in_progress(page)
 
