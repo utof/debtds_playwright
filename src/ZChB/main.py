@@ -12,6 +12,7 @@ from .flows import (
     click_beneficiaries, 
     extract_beneficiaries
 )
+from .login import login
 from ..utils import process_inn
 # Assuming a Browser wrapper class exists in a parent directory, similar to the second file
 from ..browser import Browser
@@ -39,10 +40,14 @@ def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
     }
 
     try:
+        # 0. login
+        if not login(page):
+            return {}
+        
         # 1. Navigate to the search page and handle captcha
+        # handle_captcha(page)
         logger.info(f"Navigating to search page for INN: {inn}")
         page.goto(f"https://zachestnyibiznes.ru/search?query={inn}", wait_until='domcontentloaded')
-        # handle_captcha(page)
 
         # 2. Find the correct, visible link to the company page
         company_link_locator = page.locator(f'a[href*="/company/ul/"]:visible').first
