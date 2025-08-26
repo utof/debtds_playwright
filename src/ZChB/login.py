@@ -4,6 +4,7 @@ import time
 from patchright.sync_api import Page, TimeoutError
 from loguru import logger
 from dotenv import load_dotenv
+from .handle_captcha import handle_captcha
 
 load_dotenv()
 LOGIN = os.getenv("LOGIN")
@@ -20,6 +21,7 @@ def login(page: Page) -> bool:
 
     logger.info("Navigating to main page...")
     page.goto("https://zachestnyibiznes.ru/", wait_until="domcontentloaded")
+    handle_captcha(page, timeout=15)
 
     # Check if already logged in (email somewhere in the DOM)
     if page.get_by_text(LOGIN, exact=True).count() > 0:
@@ -28,6 +30,7 @@ def login(page: Page) -> bool:
 
     logger.info("Not logged in. Going to login page...")
     page.goto("https://zachestnyibiznes.ru/login", wait_until="domcontentloaded")
+    handle_captcha(page, timeout=15)
 
     try:
         # Fill login form
@@ -36,6 +39,7 @@ def login(page: Page) -> bool:
         logger.debug("Filled login credentials.")
 
         page.get_by_role("button", name="Войти").click()
+        handle_captcha(page, timeout=15)
         logger.info("Clicked 'Войти'.")
 
         # Wait for either main page or error/timeout message
@@ -57,7 +61,7 @@ def login(page: Page) -> bool:
                     time.sleep(wait_time)
             except Exception as e:
                 logger.error(f"Could not read timeout countdown: {e}")
-
+            handle_captcha(page, timeout=15)
             # After redirect, check again if login persisted
             page.wait_for_load_state("domcontentloaded", timeout=10000)
             if page.get_by_text(LOGIN, exact=True).count() == 0:
