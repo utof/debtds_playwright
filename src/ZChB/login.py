@@ -301,7 +301,13 @@ def login(page: Page) -> bool:
             # Premium login confirmation (keep; purely informational)
             if page.get_by_text("Вы вошли в Платный доступ", exact=False).count() > 0:
                 logger.info("Detected premium login confirmation.")
-                dump_state(page, f"06_premium_seen_{attempt}")
+                # force reload to apply cookies
+                page.goto("https://zachestnyibiznes.ru/", wait_until="domcontentloaded", timeout=30000)
+                captcha_handler.handle_browser_check(page, timeout=20)
+                dump_state(page, f"07_after_premium_reload_{attempt}")
+                if canonical_login_success(page):
+                    logger.success(f"Login successful as {LOGIN} (via premium confirmation)")
+                    return True
 
             # Final success evaluation (your rule + cross-checks)
             if canonical_login_success(page):
