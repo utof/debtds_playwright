@@ -31,6 +31,7 @@ def login(page: Page) -> bool:
         timeout=30
     ):
         logger.warning("Browser verification/CAPTCHA handling failed on main page")
+        return False
 
     # Check if already logged in (email somewhere in the DOM)
     if page.get_by_text(LOGIN, exact=True).count() > 0:
@@ -43,7 +44,6 @@ def login(page: Page) -> bool:
     # Handle browser verification and CAPTCHA on login page
     if not captcha_handler.handle_browser_check(
         page, 
-        expected_url="https://zachestnyibiznes.ru/login",
         timeout=30
     ):
         logger.warning("Browser verification/CAPTCHA handling failed on login page")
@@ -60,7 +60,6 @@ def login(page: Page) -> bool:
         # Handle potential CAPTCHA after login attempt
         if not captcha_handler.handle_browser_check(
             page, 
-            expected_url="https://zachestnyibiznes.ru/**",
             timeout=30
         ):
             logger.warning("CAPTCHA appeared after login attempt")
@@ -86,7 +85,6 @@ def login(page: Page) -> bool:
                     # Check if we need to handle CAPTCHA after waiting
                     if not captcha_handler.handle_browser_check(
                         page, 
-                        expected_url="https://zachestnyibiznes.ru/**",
                         timeout=20
                     ):
                         logger.warning("CAPTCHA appeared after session conflict timeout")
