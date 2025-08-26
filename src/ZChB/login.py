@@ -8,10 +8,33 @@ from loguru import logger
 from dotenv import load_dotenv
 from .handle_captcha import CaptchaHandler
 
-load_dotenv()
-LOGIN = os.getenv("LOGIN")
-PWD = os.getenv("PWD")
+# Ensure UTF-8 encoding (handles BOMs if present)
+dotenv_path = Path(__file__).parent / ".env"
+load_dotenv(dotenv_path=dotenv_path, encoding="utf-8", override=True)
 
+
+def require_env(key: str) -> str:
+    """
+    Fetch an env var, log its raw repr() (to see \n, \r, spaces),
+    raise if missing or empty after stripping.
+    """
+    raw_value = os.getenv(key, "")
+    logger.info(f"ENV RAW {key}={repr(raw_value)} (len={len(raw_value)})")
+
+    if raw_value is None or raw_value == "":
+        raise RuntimeError(f"Missing required env var: {key}")
+
+    value = raw_value.strip()
+    if len(value) == 0:
+        raise RuntimeError(f"Env var {key} is empty after stripping")
+
+    return value
+
+
+LOGIN = require_env("LOGIN")
+PWD = require_env("PWD")
+
+logger.info(f"Using LOGIN={repr(LOGIN)}, PWD length={len(PWD)}")
 captcha_handler = CaptchaHandler()
 
 
