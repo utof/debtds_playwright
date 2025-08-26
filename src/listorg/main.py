@@ -3,7 +3,7 @@ from patchright.sync_api import sync_playwright, Browser as PlaywrightBrowser
 
 # Assuming these helper functions are in sibling files (e.g., src/listorg/flows.py)
 from .flows import extract_main_activity, find_company_data, parse_financial_data, handle_captcha
-from .utils import process_inn
+from ..utils import process_inn, calculate_financial_coefficients
 from loguru import logger
 import os
 import datetime
@@ -43,7 +43,7 @@ def run(browser: PlaywrightBrowser, inn: str, method: str) -> dict:
         handle_captcha(page)
         required_codes = [
         'Ф1.1200', 'Ф1.1240', 'Ф1.1250', 'Ф1.1400', 
-        'Ф1.1500', 'Ф1.1520', 'Ф1.1530', 'Ф1.1600', 'Ф2.2000']
+        'Ф1.1500', 'Ф1.1520', 'Ф1.1530', 'Ф1.1600', 'Ф2.2400']
 
         # Execute logic based on the requested method
         if method == 'card':
@@ -57,7 +57,8 @@ def run(browser: PlaywrightBrowser, inn: str, method: str) -> dict:
         elif method == 'finances':
             financial_data = parse_financial_data(page, required_codes)
             logger.info(f"Successfully retrieved financial data for INN: {inn}")
-            return {"financials": financial_data}
+            coefficients = calculate_financial_coefficients(financial_data)
+            return {"financials": financial_data, "coefficients": coefficients}
         
         else:
             # Handle invalid method
