@@ -13,9 +13,10 @@ class Browser:
         logger.debug("Launching browser.")
         self._playwright_context = sync_playwright()
         self._playwright = self._playwright_context.__enter__()
-        self.browser = self._playwright.chromium.launch_persistent_context(user_data_dir="datadir", 
-                                                                           channel="chrome", 
-                                                                           headless=self._headless)
+        # self.browser = self._playwright.chromium.launch_persistent_context(user_data_dir="datadir", 
+        #                                                                    channel="chrome", 
+        #                                                                    headless=self._headless)
+        self.browser = self._playwright.chromium.launch(headless=self._headless)
         return self.browser
 
     def __exit__(self, exc_type, exc_val, exc_tb):
