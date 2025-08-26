@@ -9,7 +9,9 @@ from .flows import (
     extract_ceos, 
     click_beneficiaries, 
     extract_beneficiaries,
-    extract_employees_by_year
+    extract_employees_by_year,
+    click_founders,
+    extract_founders
 )
 from .login import login
 from .court_debts import extract_defendant_in_progress
@@ -62,6 +64,13 @@ def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
             logger.info("CEO modal processed and closed.")
         else:
             logger.warning("Could not open or find the CEO modal.")
+        
+        if click_founders(page):
+            results["founders"] = extract_founders(page)
+            page.keyboard.press("Escape")
+            logger.info("founders modal processed and closed.")
+        else:
+            logger.warning("Could not open or find the founders modal.")
 
         if click_beneficiaries(page):
             results["beneficiaries"] = extract_beneficiaries(page)

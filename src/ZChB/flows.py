@@ -261,6 +261,137 @@ def extract_ceos(page: Page) -> dict:
     logger.info(f"Extracted CEO history for {len(ceos_by_date)} dates.")
     return ceos_by_date
 
+def click_founders(page: Page) -> bool:
+    """
+    Finds and clicks the link to open the 'История изменений учредителей' modal.
+
+    It waits for the modal to become visible after the click.
+
+    Args:
+        page: The Playwright page object.
+
+    Returns:
+        True if the link was clicked and the modal appeared, False otherwise.
+    """
+    # Be flexible about the company name and quotes; just match the invariant part.
+    link_locator = page.locator('a[data-title*="История изменений учредителей"]')
+
+    if link_locator.count() == 0:
+        logger.warning("The 'Founders History' link was not found on the page.")
+        return False
+
+    try:
+        logger.info("Clicking the 'Founders History' link...")
+        link_locator.first.click()
+
+        # Wait for the modal title that contains the invariant text.
+        modal_title_locator = page.locator(
+            "div.modal-title:has-text('История изменений учредителей')"
+        )
+        modal_title_locator.wait_for(state="visible", timeout=5000)
+
+        logger.success("Successfully clicked the link and the Founders history modal is visible.")
+        return True
+    except TimeoutError:
+        logger.error("Timed out waiting for the Founders history modal to appear after clicking the link.")
+        return False
+    except Exception as e:
+        logger.error(f"An error occurred while trying to open the Founders history modal: {e}")
+        return False
+
+
+def extract_founders(page: Page) -> dict:
+    """
+    Extracts the 'История изменений учредителей' table grouped by date.
+
+    Returns:
+        {
+          "12.05.2014": [
+            {"учредитель": "...", "инн": "...", "доля": "...", "доля_руб": "..."},
+            ...
+          ],
+          ...
+        }
+    """
+    founders_by_date: dict[str, list[dict]] = {}
+
+    # Scope to the specific modal by its title to avoid mixing with other modals.
+    modal_locator = page.locator(
+        "div.modal-content:has(div.modal-title:has-text('История изменений учредителей'))"
+    )
+    try:
+        modal_locator.wait_for(state="visible", timeout=5000)
+    except Exception:
+        logger.info("Founders history modal not found on the page.")
+        return {}
+
+    # Chunks are grouped per date; ids look like history-founder-chunk-DD-MM-YYYY
+    date_chunks = modal_locator.locator("tbody[id^='history-founder-chunk-']")
+    if date_chunks.count() == 0:
+        logger.warning("Founders history modal found, but no date chunks were located.")
+        return {}
+
+    for i in range(date_chunks.count()):
+        chunk = date_chunks.nth(i)
+
+        # The date lives in the row with class 'attr-date' and contains an <a href="/.../ordering?date=DD.MM.YYYY">DD.MM.YYYY</a>
+        date_cell = chunk.locator("td.attr-date")
+        if date_cell.count() == 0:
+            continue
+
+        date_anchor = date_cell.locator("a[href*='/ordering?date=']")
+        if date_anchor.count() == 0:
+            continue
+
+        date_str = (date_anchor.first.text_content() or "").strip()
+        if not date_str:
+            continue
+
+        founders_by_date.setdefault(date_str, [])
+
+        # Data rows have td[data-th]; the date row does not.
+        data_rows = chunk.locator("tr:has(td[data-th])")
+        for j in range(data_rows.count()):
+            row = data_rows.nth(j)
+
+            # Expected columns: # | Учредитель | ИНН | Доля | Доля (руб.)
+            tds = row.locator("td")
+            if tds.count() < 5:
+                # Some variants might omit a column; try to be defensive.
+                try:
+                    html_snippet = row.inner_html()
+                except Exception:
+                    html_snippet = "<unavailable>"
+                logger.warning(f"Unexpected founders row shape, skipping. HTML: {html_snippet}")
+                continue
+
+            try:
+                founder = (tds.nth(1).text_content() or "").strip()
+                inn = (tds.nth(2).text_content() or "").strip()
+                share = (tds.nth(3).text_content() or "").strip()
+                share_rub = (tds.nth(4).text_content() or "").strip()
+
+                # Normalize whitespace/newlines
+                def norm(s: str) -> str:
+                    return " ".join(s.split())
+
+                entry = {
+                    "учредитель": norm(founder),
+                    "инн": norm(inn),
+                    "доля": norm(share),
+                    "доля_руб": norm(share_rub),
+                }
+                founders_by_date[date_str].append(entry)
+            except Exception as e:
+                try:
+                    html_snippet = row.inner_html()
+                except Exception:
+                    html_snippet = "<unavailable>"
+                logger.error(f"Could not parse a founders row. HTML: {html_snippet}. Error: {e}")
+
+    logger.info(f"Extracted founders history for {len(founders_by_date)} dates.")
+    return founders_by_date
+
 
 def extract_employees_by_year(page) -> dict:
     """
