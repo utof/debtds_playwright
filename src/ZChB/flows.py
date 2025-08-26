@@ -183,65 +183,80 @@ def extract_beneficiaries(page: Page) -> dict:
 
 def extract_ceos(page: Page) -> dict:
     """
-    Finds the modal for 'История изменений руководителей' (History of CEO changes)
-    and extracts the data, organizing it by date.
-
-    Args:
-        page: The Playwright page object.
-
-    Returns:
-        A dictionary where keys are dates and values are lists of CEOs for that date.
-        Example: {"21.03.2025": [{"должность": "КОНКУРСНЫЙ УПРАВЛЯЮЩИЙ", ...}]}
+    Finds the modal for 'История изменений руководителей' and extracts the data by date.
+    Returns: {"12.05.2014": [{"должность": "...", "руководитель": "...", "инн": "..."}], ...}
     """
     ceos_by_date = {}
-    
-    # Locate the modal by its unique title text
-    modal_locator = page.locator("div.modal-content:has(div.modal-title:has-text('История изменений руководителей'))")
-    # modal_locator = page.locator("История изменений руководителей")
-    
-    if modal_locator.count() == 0:
+
+    # Wait for the modal to be present & visible
+    modal_locator = page.locator(
+        "div.modal-content:has(div.modal-title:has-text('История изменений руководителей'))"
+    )
+    try:
+        modal_locator.wait_for(state="visible", timeout=5000)
+    except Exception:
         logger.info("CEO history modal not found on the page.")
         return {}
-        
-    # The data is structured in separate tbody elements, one for each date.
-    date_chunks = modal_locator.locator("tbody[id*='history-founder-chunk-']").all()
 
-    if not date_chunks:
+    # Each date chunk is its own <tbody id="history-founder-chunk-...">
+    date_chunks = modal_locator.locator("tbody[id^='history-founder-chunk-']")
+    if date_chunks.count() == 0:
         logger.warning("CEO history modal found, but no date chunks were located.")
         return {}
 
-    for chunk in date_chunks:
-        # Extract the date from the first row of the chunk
-        date_row = chunk.locator("tr.attr-date").first
-        date_anchor = date_row.locator("a[href*='/ordering?date=']").first
-        
-        if date_anchor.count() == 0:
+    # Iterate chunks
+    for i in range(date_chunks.count()):
+        chunk = date_chunks.nth(i)
+
+        # The date is inside a <td class="attr-date"> ... <a href="/ordering?date=DD.MM.YYYY">DD.MM.2014</a>
+        date_cell = chunk.locator("td.attr-date")
+        if date_cell.count() == 0:
+            # No date row in this chunk; skip
             continue
-            
-        date_str = (date_anchor.text_content() or "").strip()
-        
-        # Find all actual data rows within this chunk
-        data_rows = chunk.locator("tr:not(.attr-date)").all()
-        
+
+        date_anchor_locator = date_cell.locator("a[href*='/ordering?date=']")
+        if date_anchor_locator.count() == 0:
+            continue
+
+        # Take the first anchor text as the date string
+        date_str = (date_anchor_locator.first.text_content() or "").strip()
+        if not date_str:
+            continue
+
         if date_str not in ceos_by_date:
             ceos_by_date[date_str] = []
 
-        for row in data_rows:
-            cells = row.locator("td").all()
-            if len(cells) >= 4:
-                try:
-                    # Extract data using the 'data-th' attribute as a fallback guide
-                    position = (cells[1].text_content() or "").strip()
-                    name = (cells[2].text_content() or "").strip()
-                    inn = (cells[3].text_content() or "").strip()
+        # Data rows: have <td data-th="..."> cells; the date row does not.
+        data_rows = chunk.locator("tr:has(td[data-th])")
+        for j in range(data_rows.count()):
+            row = data_rows.nth(j)
 
-                    ceos_by_date[date_str].append({
-                        "должность": position,
-                        "руководитель": name,
-                        "инн": inn
-                    })
-                except Exception as e:
-                    logger.error(f"Could not parse a CEO row. HTML: {row.inner_html()}. Error: {e}")
+            # We expect at least 4 <td>s: index, position, name, inn
+            tds = row.locator("td")
+            if tds.count() < 4:
+                continue
+
+            try:
+                position = (tds.nth(1).text_content() or "").strip()
+                name = (tds.nth(2).text_content() or "").strip()
+                inn = (tds.nth(3).text_content() or "").strip()
+
+                # Normalize whitespace/newlines
+                position = " ".join(position.split())
+                name = " ".join(name.split())
+                inn = " ".join(inn.split())
+
+                ceos_by_date[date_str].append({
+                    "должность": position,
+                    "руководитель": name,
+                    "инн": inn
+                })
+            except Exception as e:
+                try:
+                    html_snippet = row.inner_html()
+                except Exception:
+                    html_snippet = "<unavailable>"
+                logger.error(f"Could not parse a CEO row. HTML: {html_snippet}. Error: {e}")
 
     logger.info(f"Extracted CEO history for {len(ceos_by_date)} dates.")
     return ceos_by_date
