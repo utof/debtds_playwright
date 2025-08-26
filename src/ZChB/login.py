@@ -19,7 +19,7 @@ def require_env(key: str) -> str:
     raise if missing or empty after stripping.
     """
     raw_value = os.getenv(key, "")
-    logger.info(f"ENV RAW {key}={repr(raw_value)} (len={len(raw_value)})")
+    logger.info(f"ENV RAW (len={len(raw_value)})")
 
     if raw_value is None or raw_value == "":
         raise RuntimeError(f"Missing required env var: {key}")
@@ -31,8 +31,8 @@ def require_env(key: str) -> str:
     return value
 
 
-LOGIN = require_env("LOGIN")
-PWD = require_env("PWD")
+LOGIN = require_env("ZCHB_LOGIN")
+PWD = require_env("ZCHB_PWD")
 
 logger.info(f"Using LOGIN={repr(LOGIN)}, PWD length={len(PWD)}")
 captcha_handler = CaptchaHandler()
