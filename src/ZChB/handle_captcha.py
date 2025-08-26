@@ -4,7 +4,7 @@ import time
 import base64
 from typing import Optional
 from dotenv import load_dotenv
-from playwright.sync_api import Page, TimeoutError
+from patchright.sync_api import Page, TimeoutError
 from loguru import logger
 from twocaptcha import TwoCaptcha
 
