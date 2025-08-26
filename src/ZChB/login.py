@@ -16,7 +16,8 @@ def login(page: Page) -> bool:
     Simplified login flow:
     - Navigate to site
     - Solve captcha if needed
-    - Submit login form
+    - If /login redirects to /user → already logged in → success
+    - Otherwise, submit login form
     - Success if premium modal (#premiumloginmodal) appears and is dismissed
     """
 
@@ -29,6 +30,12 @@ def login(page: Page) -> bool:
         page.goto("https://zachestnyibiznes.ru/login", wait_until="domcontentloaded", timeout=60000)
         captcha_handler.handle_browser_check(page, timeout=30)
 
+        # --- Case 1: redirected automatically to /user → already logged in
+        if "/user" in page.url.lower():
+            logger.success(f"Already logged in (redirected to {page.url})")
+            return True
+
+        # --- Case 2: need to submit credentials ---
         # Fill form
         page.get_by_role("textbox", name="Email или номер телефона").fill(LOGIN)
         page.get_by_role("textbox", name="Пароль").fill(PWD)
@@ -55,7 +62,6 @@ def login(page: Page) -> bool:
             # Wait for modal to close
             modal.wait_for(state="detached", timeout=8000)
 
-            # At this point you’re logged in
             logger.success(f"Login successful as {LOGIN}")
             return True
 
