@@ -5,6 +5,7 @@ from loguru import logger
 from src.browser import Browser
 # NEW: import the test/extended extractor
 from src.ZChB.main import run_test as run_extended_extraction  # <-- added
+from fastapi.responses import FileResponse
 
 # Configure Loguru
 logger.remove()
@@ -78,3 +79,7 @@ def get_company_extended(inn: str):
 @app.get("/")
 def read_root():
     return {"message": "Welcome to the Company Data API. Visit /docs for documentation."}
+
+@app.get("/favicon.ico")
+async def favicon():
+    return FileResponse("static/empty.ico")
