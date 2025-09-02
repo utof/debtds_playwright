@@ -48,13 +48,17 @@ def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
         logger.info(f"Navigating to search page for INN: {inn}")
         page.goto(f"https://zachestnyibiznes.ru/search?query={inn}", wait_until='domcontentloaded')
 
-        company_link_locator = page.locator(f'a[href*="/company/ul/"]:visible').first
-        if company_link_locator.count() == 0:
+        # Locate all potential company links first, without selecting .first
+        company_links_locator = page.locator(f'a[href*="/company/ul/"]:visible')
+        
+        # Check the count. If zero, no link was found.
+        if company_links_locator.count() == 0:
             logger.warning("No visible company link found on the search results page.")
-            return {}
+            return {"message": "Не найдено данных на ЗЧБ. Нет такой компании."}
 
+        # If we are here, at least one link exists. Now we can safely get the first and click it.
         logger.info("Company link found, navigating to company page.")
-        company_link_locator.click()
+        company_links_locator.first.click()
         page.wait_for_load_state("domcontentloaded")
         logger.success("Successfully navigated to the company page.")
 
