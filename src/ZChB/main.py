@@ -1,4 +1,4 @@
-from patchright.async_api import Browser as PlaywrightBrowser
+from patchright.async_api import Browser as PlaywrightBrowser, Page
 from loguru import logger
 import json
 import os
@@ -6,9 +6,9 @@ import datetime
 import asyncio
 
 from .flows import (
-    click_ceos, 
-    extract_ceos, 
-    click_beneficiaries, 
+    click_ceos,
+    extract_ceos,
+    click_beneficiaries,
     extract_beneficiaries,
     extract_employees_by_year,
     click_founders,
@@ -18,6 +18,46 @@ from .login import login
 from .court_debts import extract_defendant_in_progress
 from ..utils import process_inn
 from ..browser import Browser
+
+async def close_modal(page: Page):
+    """
+    Closes the currently active modal by clicking its close button
+    and waits for it to become hidden. This version includes a fallback
+    to a direct JavaScript click for maximum reliability.
+    """
+    try:
+        modal_container = page.locator("#modal-template .modal-content:visible")
+
+        if await modal_container.count() == 0:
+            logger.warning("close_modal was called, but no visible modal was found.")
+            await page.keyboard.press("Escape")
+            return
+
+        close_button = modal_container.locator('button[data-dismiss="modal"]')
+
+        if await close_button.count() > 0:
+            logger.info("Modal close button found. Attempting to close modal.")
+            
+            # Try a standard click first. It's cleaner if it works.
+            try:
+                await close_button.first.click(timeout=2000)
+            except Exception as e:
+                logger.warning(f"Standard click failed: {e}. Falling back to JavaScript click.")
+                # If it fails (e.g., timeout, obscured), immediately try JS click.
+                await close_button.first.evaluate("el => el.click()")
+
+            # After attempting a click, verify the modal is hidden.
+            await modal_container.wait_for(state="hidden", timeout=5000)
+            logger.info("Modal has been successfully closed.")
+        else:
+            logger.warning("Modal close button not found, falling back to pressing 'Escape'.")
+            await page.keyboard.press("Escape")
+            await modal_container.wait_for(state="hidden", timeout=5000)
+
+    except Exception as e:
+        logger.error(f"An error occurred while closing the modal: {e}. Attempting to press 'Escape' as a fallback.")
+        await page.keyboard.press("Escape")
+
 
 async def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
     """
@@ -39,25 +79,22 @@ async def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
     results = {
         "ceos": {},
         "beneficiaries": {},
-        "defendant_in_progress": {}  # + new field
+        "defendant_in_progress": {}
     }
 
     try:
         if not await login(page):
             return {}
-        
+
         logger.info(f"Navigating to search page for INN: {inn}")
         await page.goto(f"https://zachestnyibiznes.ru/search?query={inn}", wait_until='domcontentloaded')
 
-        # Locate all potential company links first, without selecting .first
         company_links_locator = page.locator(f'a[href*="/company/ul/"]:visible')
         
-        # Check the count. If zero, no link was found.
         if await company_links_locator.count() == 0:
             logger.warning("No visible company link found on the search results page.")
             return {"message": "Не найдено данных на ЗЧБ. Нет такой компании."}
 
-        # If we are here, at least one link exists. Now we can safely get the first and click it.
         logger.info("Company link found, navigating to company page.")
         await company_links_locator.first.click()
         await page.wait_for_load_state("domcontentloaded")
@@ -65,28 +102,27 @@ async def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
 
         if await click_ceos(page):
             results["ceos"] = await extract_ceos(page)
-            await page.keyboard.press("Escape")
+            await close_modal(page)
             logger.info("CEO modal processed and closed.")
         else:
             logger.warning("Could not open or find the CEO modal.")
-        
+
         if await click_founders(page):
             results["founders"] = await extract_founders(page)
-            await page.keyboard.press("Escape")
+            await close_modal(page)
             logger.info("founders modal processed and closed.")
         else:
             logger.warning("Could not open or find the founders modal.")
 
         if await click_beneficiaries(page):
             results["beneficiaries"] = await extract_beneficiaries(page)
-            await page.keyboard.press("Escape")
+            await close_modal(page)
             logger.info("Beneficiaries modal processed and closed.")
         else:
             logger.warning("Could not open or find the beneficiaries modal.")
 
         results["employees_by_year"] = await extract_employees_by_year(page)
         
-        # + new extraction (no modal)
         results["defendant_in_progress"] = await extract_defendant_in_progress(page)
 
         return results
