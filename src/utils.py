@@ -24,14 +24,9 @@ def calculate_financial_coefficients(financial_data: dict) -> dict:
 
     required_codes = [
         'Ф1.1200', 'Ф1.1240', 'Ф1.1250', 'Ф1.1400',
-        'Ф1.1500', 'Ф1.1520', 'Ф1.1530', 'Ф1.1600', 'Ф2.2000'
+        'Ф1.1500', 'Ф1.1520', 'Ф1.1530', 'Ф1.1600', 'Ф2.2400'
     ]
 
-    # if 'financials' not in financial_data:
-    #     logger.warning("Input data does not contain 'financials' key.")
-    #     return {}
-
-    # data = financial_data['financials']
     data = financial_data
 
     if not financial_data:
@@ -57,11 +52,9 @@ def calculate_financial_coefficients(financial_data: dict) -> dict:
             return None, f"нет значения {code}"
         try:
             # accept strings like "1 234", "1,234" (we expect integers in input)
-            s = str(val).replace("\xa0", " ").strip()
-            s = s.replace(" ", "")
-            s = s.replace(",", "")  # incoming are usually integers; strip commas
+            s = str(val).replace("\xa0", " ").strip().replace(" ", "").replace(",", "")
             return int(s), None
-        except Exception:
+        except (ValueError, TypeError):
             return None, f"не число {code}"
 
     def getv(code: str, year: str) -> tuple[int | None, str | None]:
@@ -72,9 +65,7 @@ def calculate_financial_coefficients(financial_data: dict) -> dict:
         if code not in data:
             return None, f"нет {code}"
         values = data[code].get('values')
-        if not isinstance(values, dict):
-            return None, f"нет {code}"
-        if year not in values:
+        if not isinstance(values, dict) or year not in values:
             return None, f"нет значения {code}"
         return _parse_int_or_reason(values[year], code)
 
@@ -95,7 +86,11 @@ def calculate_financial_coefficients(financial_data: dict) -> dict:
                     seen.add(r)
             return None, "; ".join(uniq)
         try:
-            return op([v for v, _ in val_err_list]), None
+            result = op([v for v, _ in val_err_list])
+            # If the result is a float, round it to 4 decimal places.
+            if isinstance(result, float):
+                result = round(result, 4)
+            return result, None
         except ZeroDivisionError:
             return None, "деление на 0"
         except Exception as e:
