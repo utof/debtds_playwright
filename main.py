@@ -129,7 +129,8 @@ async def pdf_extract(url: HttpUrl = Query(..., description="The URL of the PDF 
     """
     logger.info(f"Received request to extract text from PDF at URL: {url}")
     try:
-        result = await extract_text_from_url(str(url))
+        # The 'await' keyword is removed here as the error suggests extract_text_from_url is not a coroutine
+        result = extract_text_from_url(str(url))
         if not result["success"]:
             raise HTTPException(status_code=400, detail=result["error"])
         return result
