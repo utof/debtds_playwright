@@ -1,26 +1,41 @@
-from patchright.async_api import async_playwright, async_playwright, Browser as PlaywrightBrowser
+from patchright.async_api import async_playwright, Browser as PlaywrightBrowser
 from loguru import logger
 
 class Browser:
-    """A context manager for the Playwright browser."""
+    """Manages a persistent Playwright browser instance."""
     def __init__(self, headless: bool = True):
         self._headless = headless
-        self._playwright_context = None
+        self._playwright_context: async_playwright | None = None
         self._playwright: async_playwright | None = None
         self.browser: PlaywrightBrowser | None = None
 
-    async def __aenter__(self):
-        logger.debug("Launching browser.")
-        self._playwright_context = async_playwright()
-        self._playwright = await self._playwright_context.__aenter__()
-        self.browser = await self._playwright.chromium.launch_persistent_context(user_data_dir="datadir", 
-                                                                           channel="chrome", 
-                                                                           headless=self._headless)
-        return self.browser
+    async def launch(self):
+        """Launches the browser and the Playwright driver."""
+        if not self._playwright:
+            logger.info("Starting Playwright driver...")
+            self._playwright_context = async_playwright()
+            self._playwright = await self._playwright_context.start()
+        
+        if not self.browser or not self.browser.is_connected():
+            logger.info("Launching persistent browser context...")
+            self.browser = await self._playwright.chromium.launch_persistent_context(
+                user_data_dir="datadir",
+                channel="chrome",
+                headless=self._headless
+            )
+        logger.success("Browser is launched and ready.")
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def close(self):
+        """Closes the browser and stops the Playwright driver."""
         if self.browser:
             await self.browser.close()
-            logger.debug("Browser closed.")
+            logger.info("Browser context closed.")
         if self._playwright_context:
-            await self._playwright_context.__aexit__(exc_type, exc_val, exc_tb)
+            await self._playwright_context.stop()
+            logger.info("Playwright driver stopped.")
+        self.browser = None
+        self._playwright_context = None
+
+    def is_connected(self) -> bool:
+        """Checks if the browser instance is running and connected."""
+        return self.browser is not None and self.browser.is_connected()
