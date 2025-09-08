@@ -121,7 +121,7 @@ async def login(page: Page) -> bool:
             await page.get_by_role("button", name="Понятно").click(timeout=3000)
             logger.info("Dismissed premium modal.")
 
-            await modal.wait_for(state="detached", timeout=8000)
+            # await modal.wait_for(state="detached", timeout=8000)
 
             logger.success(f"Login successful as {LOGIN}")
             return True
