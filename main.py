@@ -6,7 +6,7 @@ import asyncio
 
 from src.listorg.main import run as fetch_company_data
 from loguru import logger
-from src.browser import Browser  # Updated import
+from src.browser import Browser
 from src.ZChB.main import run_test as run_extended_extraction
 from fastapi.responses import FileResponse
 from src.apicloud import check_bankruptcy_status
@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Company Data API",
     description="An API to fetch company card, financial, bankruptcy data, and extract text from PDFs.",
-    version="1.4.0", # Version bump for the fix
+    version="1.4.1", # Version bump for the fix
     lifespan=lifespan
 )
 
@@ -51,8 +51,8 @@ async def get_company_card(inn: str):
     if not browser_manager.is_connected():
         raise HTTPException(status_code=503, detail="Browser service is not available.")
     try:
-        # Use the shared browser instance
-        data = await fetch_company_data(browser_manager.browser, inn, method='card')
+        # Use the shared browser context
+        data = await fetch_company_data(browser_manager.context, inn, method='card')
         if data.get("error"):
             raise HTTPException(status_code=404, detail=data["error"])
         return {'success': True, 'data': data}
@@ -71,8 +71,8 @@ async def get_company_finances(inn: str):
     if not browser_manager.is_connected():
         raise HTTPException(status_code=503, detail="Browser service is not available.")
     try:
-        # Use the shared browser instance
-        data = await fetch_company_data(browser_manager.browser, inn, method='finances')
+        # Use the shared browser context
+        data = await fetch_company_data(browser_manager.context, inn, method='finances')
         if data.get("error"):
             raise HTTPException(status_code=404, detail=data["error"])
         return {'success': True, 'data': data}
@@ -91,8 +91,8 @@ async def get_company_extended(inn: str):
     if not browser_manager.is_connected():
         raise HTTPException(status_code=503, detail="Browser service is not available.")
     try:
-        # Use the shared browser instance
-        data = await run_extended_extraction(browser_manager.browser, inn)
+        # Use the shared browser context
+        data = await run_extended_extraction(browser_manager.context, inn)
         if isinstance(data, dict) and data.get("error"):
             raise HTTPException(status_code=404, detail=data["error"])
         return {'success': True, 'data': data}
