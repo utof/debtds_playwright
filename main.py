@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import HttpUrl
 from contextlib import asynccontextmanager
 import asyncio
+import re # Import re for query parameter validation
 
 from src.listorg.main import run as fetch_company_data
 from loguru import logger
@@ -37,7 +38,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Company Data API",
     description="An API to fetch company card, financial, bankruptcy data, and extract text from PDFs.",
-    version="1.5.0", # Version bump for persistent context
+    version="1.6.0", # Version bump for new feature
     lifespan=lifespan
 )
 
@@ -63,16 +64,24 @@ async def get_company_card(inn: str):
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
 
 @app.get('/company_finances/{inn}')
-async def get_company_finances(inn: str):
+async def get_company_finances(
+    inn: str,
+    years: str = Query(
+        None,
+        description="Filter financial data by years. Formats: '2020,2021' for specific years, '2020:' for 2020 and later.",
+        regex=r"^\d{4}(:\s*|,\s*\d{4})*$" # Basic validation for '2020:' or '2020,2021,2022'
+    )
+):
     """
     Retrieves financial data for a given INN.
+    Optionally filters data for specific years.
     """
-    logger.info(f"Received request for company_finances with INN: {inn}")
+    logger.info(f"Received request for company_finances with INN: {inn} and years: {years}")
     if not browser_manager.is_connected():
         raise HTTPException(status_code=503, detail="Browser service is not available.")
     try:
-        # Use the shared browser context
-        data = await fetch_company_data(browser_manager.context, inn, method='finances')
+        # Pass the years filter to the data fetching function
+        data = await fetch_company_data(browser_manager.context, inn, method='finances', years_filter=years)
         if data.get("error"):
             raise HTTPException(status_code=404, detail=data["error"])
         return {'success': True, 'data': data}
@@ -81,6 +90,7 @@ async def get_company_finances(inn: str):
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
+
 
 @app.get('/company_extended/{inn}')
 async def get_company_extended(inn: str):

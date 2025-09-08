@@ -102,7 +102,7 @@ async def extract_main_activity(page: Page) -> dict:
     # Return an empty dictionary if the main activity section wasn't found.
     return {}
 
-async def parse_financial_data(page: Page, target_indicators: list[str] | None = None) -> dict:
+async def parse_financial_data(page: Page, target_indicators: list[str] | None = None, years_filter: str | None = None) -> dict:
     """
     Parses the financial data table from the company's report page.
     The data is keyed by the financial indicator code.
@@ -110,8 +110,9 @@ async def parse_financial_data(page: Page, target_indicators: list[str] | None =
     Args:
         page: The Playwright page object, on a company's main page.
         target_indicators: An optional list of financial indicators (names or codes) to parse.
-                           If provided, the function will only search for and extract these indicators.
-                           If None (default), it parses all available indicators.
+                           If provided, only these indicators are extracted.
+        years_filter: An optional string to filter columns by year.
+                      Examples: "2020,2021" or "2020:".
 
     Returns:
         A dictionary with financial indicators and their values over the years, keyed by indicator code.
@@ -134,16 +135,35 @@ async def parse_financial_data(page: Page, target_indicators: list[str] | None =
         logger.error("Financial report table (#rep_table) not found on the page.")
         return {}
 
-    # Extract years from the header row
+    # --- MODIFIED: Extract and filter years ---
     header_row = table_locator.locator('tr:has-text("Показатель")').first
-    header_cells = await header_row.locator("td.tth").all_text_contents()
+    header_cells_locators = header_row.locator("td.tth")
+    all_header_texts = await header_cells_locators.all_text_contents()
     
     try:
-        pokazatel_index = header_cells.index('Показатель')
-        years = [year.strip() for year in header_cells[pokazatel_index + 1:] if year.strip().isdigit()]
+        pokazatel_index = all_header_texts.index('Показатель')
+        # Store original years and their column indices relative to the start of year columns
+        original_years_with_indices = {
+            year.strip(): i for i, year in enumerate(all_header_texts[pokazatel_index + 1:]) if year.strip().isdigit()
+        }
+        all_original_years = list(original_years_with_indices.keys())
     except (ValueError, IndexError):
         logger.error("Could not parse years from the table header.")
         return {}
+
+    # Apply year filtering
+    target_years = all_original_years
+    if years_filter:
+        if ':' in years_filter:
+            start_year = int(years_filter.strip().replace(':', ''))
+            target_years = [y for y in all_original_years if int(y) >= start_year]
+        else:
+            filter_years_set = {y.strip() for y in years_filter.split(',')}
+            target_years = [y for y in all_original_years if y in filter_years_set]
+    
+    # Map target years back to their column indices
+    year_indices_to_extract = {original_years_with_indices[y]: y for y in target_years}
+    # --- END MODIFICATION ---
 
     financial_data = {}
 
@@ -153,7 +173,7 @@ async def parse_financial_data(page: Page, target_indicators: list[str] | None =
         This is now more robust and doesn't rely on fixed cell indices for code/name.
         """
         all_cells = await row_locator.locator("td").all()
-        if not all_cells or len(all_cells) < len(years) + 3:
+        if not all_cells or len(all_cells) < 3:
             return None, None
 
         # Explicitly find the code: the first 'td' with class 'tt_hide'
@@ -172,7 +192,7 @@ async def parse_financial_data(page: Page, target_indicators: list[str] | None =
         # Data cells start after the first three columns (code, name, unit)
         data_cells = all_cells[3:]
         values = {}
-        for i, year in enumerate(years):
+        for i, year in year_indices_to_extract.items():
             if i < len(data_cells):
                 value = (await data_cells[i].text_content() or "").strip()
                 values[year] = value
@@ -183,8 +203,6 @@ async def parse_financial_data(page: Page, target_indicators: list[str] | None =
         # Optimized path: Search only for the specified indicators by name or code
         for indicator in target_indicators:
             logger.info(f"Processing target indicator: {indicator}")
-            
-            # *** FIXED SELECTOR SYNTAX HERE ***
             # Use a comma for OR condition, separating two full selectors.
             selector = f'tr:has(a:text-is("{indicator}")), tr:has(td.tt_hide:text-is("{indicator}"))'
             rows = table_locator.locator(selector)

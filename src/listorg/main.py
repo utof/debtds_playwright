@@ -10,7 +10,7 @@ import json
 
 from ..browser import Browser
 
-async def run(browser: PlaywrightBrowser, inn: str, method: str) -> dict:
+async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: str | None = None) -> dict:
     """
     Scrapes company data from list-org.com based on the INN.
 
@@ -55,7 +55,7 @@ async def run(browser: PlaywrightBrowser, inn: str, method: str) -> dict:
             return result
         
         elif method == 'finances':
-            financial_data = await parse_financial_data(page, required_codes)
+            financial_data = await parse_financial_data(page, required_codes, years_filter)
             logger.info(f"Successfully retrieved financial data for INN: {inn}")
             coefficients = calculate_financial_coefficients(financial_data)
             return {"financials": financial_data, "coefficients": coefficients}
