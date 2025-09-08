@@ -4,7 +4,7 @@ import time
 import base64
 from typing import Optional
 from dotenv import load_dotenv
-from patchright.sync_api import Page, TimeoutError
+from patchright.async_api import Page, TimeoutError
 from loguru import logger
 from twocaptcha import TwoCaptcha
 
@@ -19,7 +19,7 @@ class CaptchaHandler:
             logger.error("APIKEY_2CAPTCHA environment variable not set")
             raise ValueError("APIKEY_2CAPTCHA environment variable not set")
 
-    def _is_browser_check_page(self, page: Page) -> bool:
+    async def _is_browser_check_page(self, page: Page) -> bool:
         """
         Detect browser verification page using heuristics.
         """
@@ -36,7 +36,7 @@ class CaptchaHandler:
             ]
             
             for selector in selectors_to_check:
-                if page.locator(selector).count() > 0:
+                if await page.locator(selector).count() > 0:
                     return True
             
             # Check for text patterns in both English and Russian
@@ -50,13 +50,13 @@ class CaptchaHandler:
             ]
             
             for pattern in text_patterns:
-                if page.get_by_text(pattern, exact=False).count() > 0:
+                if await page.get_by_text(pattern, exact=False).count() > 0:
                     return True
             
             # Check body attributes that indicate DDOS-Guard
             body = page.locator("body")
-            if body.count() > 0:
-                attrs = body.get_attribute("data-ddg-origin") or body.get_attribute("data-ddg-l10n")
+            if await body.count() > 0:
+                attrs = await body.get_attribute("data-ddg-origin") or await body.get_attribute("data-ddg-l10n")
                 if attrs:
                     return True
                     
@@ -65,20 +65,20 @@ class CaptchaHandler:
             
         return False
 
-    def _wait_for_captcha_to_load(self, iframe) -> bool:
+    async def _wait_for_captcha_to_load(self, iframe) -> bool:
         """
         Wait for the CAPTCHA to finish loading and be ready for interaction.
         """
         try:
             # Wait for the pending state to disappear
-            iframe.wait_for_selector('.ddg-captcha--pending', state='detached', timeout=10000)
+            await iframe.wait_for_selector('.ddg-captcha--pending', state='detached', timeout=10000)
             logger.info("CAPTCHA finished loading")
             return True
         except TimeoutError:
             logger.warning("CAPTCHA loading timed out")
             return False
 
-    def _solve_captcha(self, page: Page) -> bool:
+    async def _solve_captcha(self, page: Page) -> bool:
         """
         Solve the DDOS-Guard CAPTCHA challenge.
         """
@@ -86,31 +86,31 @@ class CaptchaHandler:
         
         try:
             # Wait for the iframe containing the CAPTCHA
-            iframe_element = page.wait_for_selector('#ddg-iframe', timeout=15000)
-            iframe = iframe_element.content_frame()
+            iframe_element = await page.wait_for_selector('#ddg-iframe', timeout=15000)
+            iframe = await iframe_element.content_frame()
             logger.info("CAPTCHA iframe found")
 
             # Click the initial checkbox
             checkbox_selector = '.ddg-captcha__checkbox'
-            checkbox = iframe.wait_for_selector(checkbox_selector, timeout=10000)
-            checkbox.click()
+            checkbox = await iframe.wait_for_selector(checkbox_selector, timeout=10000)
+            await checkbox.click()
             logger.info("Checkbox clicked, waiting for challenge to load")
 
             # Wait for the CAPTCHA to finish loading
-            if not self._wait_for_captcha_to_load(iframe):
+            if not await self._wait_for_captcha_to_load(iframe):
                 return False
                 
             # Wait for the challenge modal
             challenge_modal_selector = '#ddg-challenge'
             try:
-                iframe.wait_for_selector(challenge_modal_selector, state='visible', timeout=10000)
+                await iframe.wait_for_selector(challenge_modal_selector, state='visible', timeout=10000)
                 logger.info("Challenge modal visible")
             except TimeoutError:
                 # Sometimes the CAPTCHA solves itself after checkbox click
                 logger.info("No challenge modal appeared - CAPTCHA may have auto-resolved")
                 # Check if the iframe is still there or if we've been redirected
                 try:
-                    page.wait_for_selector('#ddg-iframe', state='hidden', timeout=5000)
+                    await page.wait_for_selector('#ddg-iframe', state='hidden', timeout=5000)
                     logger.info("CAPTCHA resolved automatically")
                     return True
                 except TimeoutError:
@@ -118,7 +118,7 @@ class CaptchaHandler:
                     return False
 
             # Extract the CAPTCHA image
-            captcha_image_element = iframe.wait_for_selector(
+            captcha_image_element = await iframe.wait_for_selector(
                 '.ddg-modal__captcha-image', state='visible', timeout=10000
             )
             logger.info("CAPTCHA image found")
@@ -126,7 +126,7 @@ class CaptchaHandler:
             # Let's try a different approach to get the image data
             # Wait for the image to be fully loaded
             logger.info("Waiting for image to be fully loaded...")
-            iframe.wait_for_function("""
+            await iframe.wait_for_function("""
                 () => {
                     const img = document.querySelector('.ddg-modal__captcha-image');
                     return img && img.complete && img.naturalWidth > 0;
@@ -134,11 +134,11 @@ class CaptchaHandler:
             """, timeout=10000)
             
             # Get the base64 source with additional error checking
-            img_src = captcha_image_element.get_attribute('src')
+            img_src = await captcha_image_element.get_attribute('src')
             
             if not img_src:
                 # Try to get the source via JavaScript evaluation
-                img_src = iframe.evaluate("""
+                img_src = await iframe.evaluate("""
                     () => {
                         const img = document.querySelector('.ddg-modal__captcha-image');
                         return img ? img.src : null;
@@ -165,16 +165,16 @@ class CaptchaHandler:
                 return False
 
             # Submit the solution
-            input_field = iframe.query_selector('.ddg-modal__input')
-            submit_button = iframe.query_selector('.ddg-modal__submit')
+            input_field = await iframe.query_selector('.ddg-modal__input')
+            submit_button = await iframe.query_selector('.ddg-modal__submit')
 
             if input_field and submit_button:
-                input_field.fill(captcha_text)
-                submit_button.click()
+                await input_field.fill(captcha_text)
+                await submit_button.click()
                 
                 # Wait for CAPTCHA to be validated
                 try:
-                    page.wait_for_selector('#ddg-iframe', state='hidden', timeout=20000)
+                    await page.wait_for_selector('#ddg-iframe', state='hidden', timeout=20000)
                     logger.success("CAPTCHA solved successfully")
                     return True
                 except TimeoutError:
@@ -194,7 +194,7 @@ class CaptchaHandler:
             logger.error(f"Error solving CAPTCHA: {e}")
             return False
 
-    def handle_browser_check(self, page: Page, timeout: float = 30.0) -> bool:
+    async def handle_browser_check(self, page: Page, timeout: float = 30.0) -> bool:
         """
         Handle browser verification and CAPTCHA challenges.
         Returns True if successful, False otherwise.
@@ -205,15 +205,15 @@ class CaptchaHandler:
         check_interval = 1.0
         
         while time.time() - start_time < timeout:
-            if not self._is_browser_check_page(page):
+            if not await self._is_browser_check_page(page):
                 logger.info("No browser verification detected")
                 return True
                 
             # Check if CAPTCHA iframe is present
             try:
-                if page.locator('#ddg-iframe').count() > 0:
+                if await page.locator('#ddg-iframe').count() > 0:
                     logger.info("CAPTCHA detected, attempting to solve")
-                    result = self._solve_captcha(page)
+                    result = await self._solve_captcha(page)
                     if result:
                         return True
                     else:
@@ -223,7 +223,7 @@ class CaptchaHandler:
                 logger.debug(f"Error checking for CAPTCHA iframe: {e}")
                 
             # Wait a bit before checking again
-            time.sleep(check_interval)
+            await page.wait_for_timeout(check_interval * 1000)
         
         logger.warning("Browser verification/CAPTCHA handling timed out")
         return False

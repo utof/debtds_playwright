@@ -1,8 +1,9 @@
-from patchright.sync_api import Browser as PlaywrightBrowser
+from patchright.async_api import Browser as PlaywrightBrowser
 from loguru import logger
 import json
 import os
 import datetime
+import asyncio
 
 from .flows import (
     click_ceos, 
@@ -18,7 +19,7 @@ from .court_debts import extract_defendant_in_progress
 from ..utils import process_inn
 from ..browser import Browser
 
-def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
+async def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
     """
     Tests the CEO and Beneficiary extraction flow on zachestnyibiznes.ru.
 
@@ -32,7 +33,7 @@ def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
     inn = process_inn(inn)
     logger.info(f"Starting test run for INN: {inn}")
 
-    page = browser.new_page()
+    page = await browser.new_page()
     logger.debug("New page created.")
 
     results = {
@@ -42,66 +43,66 @@ def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
     }
 
     try:
-        if not login(page):
+        if not await login(page):
             return {}
         
         logger.info(f"Navigating to search page for INN: {inn}")
-        page.goto(f"https://zachestnyibiznes.ru/search?query={inn}", wait_until='domcontentloaded')
+        await page.goto(f"https://zachestnyibiznes.ru/search?query={inn}", wait_until='domcontentloaded')
 
         # Locate all potential company links first, without selecting .first
         company_links_locator = page.locator(f'a[href*="/company/ul/"]:visible')
         
         # Check the count. If zero, no link was found.
-        if company_links_locator.count() == 0:
+        if await company_links_locator.count() == 0:
             logger.warning("No visible company link found on the search results page.")
             return {"message": "Не найдено данных на ЗЧБ. Нет такой компании."}
 
         # If we are here, at least one link exists. Now we can safely get the first and click it.
         logger.info("Company link found, navigating to company page.")
-        company_links_locator.first.click()
-        page.wait_for_load_state("domcontentloaded")
+        await company_links_locator.first.click()
+        await page.wait_for_load_state("domcontentloaded")
         logger.success("Successfully navigated to the company page.")
 
-        if click_ceos(page):
-            results["ceos"] = extract_ceos(page)
-            page.keyboard.press("Escape")
+        if await click_ceos(page):
+            results["ceos"] = await extract_ceos(page)
+            await page.keyboard.press("Escape")
             logger.info("CEO modal processed and closed.")
         else:
             logger.warning("Could not open or find the CEO modal.")
         
-        if click_founders(page):
-            results["founders"] = extract_founders(page)
-            page.keyboard.press("Escape")
+        if await click_founders(page):
+            results["founders"] = await extract_founders(page)
+            await page.keyboard.press("Escape")
             logger.info("founders modal processed and closed.")
         else:
             logger.warning("Could not open or find the founders modal.")
 
-        if click_beneficiaries(page):
-            results["beneficiaries"] = extract_beneficiaries(page)
-            page.keyboard.press("Escape")
+        if await click_beneficiaries(page):
+            results["beneficiaries"] = await extract_beneficiaries(page)
+            await page.keyboard.press("Escape")
             logger.info("Beneficiaries modal processed and closed.")
         else:
             logger.warning("Could not open or find the beneficiaries modal.")
 
-        results["employees_by_year"] = extract_employees_by_year(page)
+        results["employees_by_year"] = await extract_employees_by_year(page)
         
         # + new extraction (no modal)
-        results["defendant_in_progress"] = extract_defendant_in_progress(page)
+        results["defendant_in_progress"] = await extract_defendant_in_progress(page)
 
         return results
 
     except Exception as e:
         logger.exception(f"An error occurred during the test run for INN {inn}: {e}")
         os.makedirs("data/screenshots", exist_ok=True)
-        page.screenshot(path=f"data/screenshots/error_{inn}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+        await page.screenshot(path=f"data/screenshots/error_{inn}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
         return {"error": str(e)}
     
     finally:
-        page.close()
+        await page.close()
         logger.debug("Page closed.")
 
 
-if __name__ == "__main__":
+async def main():
     test_inn = "3123109532"
     
     log_file = f"data/logs/test_runs_{datetime.datetime.now().strftime('%Y-%m-%d')}.log"
@@ -111,8 +112,8 @@ if __name__ == "__main__":
     logger.info(f"--- Starting new test session for INN: {test_inn} ---")
     
     try:
-        with Browser() as browser:
-            final_data = run_test(browser, test_inn)
+        async with Browser() as browser:
+            final_data = await run_test(browser, test_inn)
             output_filename = f"data/output/{test_inn}_test_data.json"
             os.makedirs(os.path.dirname(output_filename), exist_ok=True)
             with open(output_filename, "w", encoding="utf-8") as f:
@@ -123,3 +124,6 @@ if __name__ == "__main__":
     except Exception as e:
         logger.exception(f"A critical error occurred in the main execution block: {e}")
         raise
+
+if __name__ == "__main__":
+    asyncio.run(main())

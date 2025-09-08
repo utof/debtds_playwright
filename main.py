@@ -2,6 +2,7 @@ import sys
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import HttpUrl
 from contextlib import asynccontextmanager
+import asyncio
 
 from src.listorg.main import run as fetch_company_data
 from loguru import logger
@@ -26,7 +27,7 @@ async def lifespan(app: FastAPI):
     yield
     # This part runs on shutdown.
     logger.info("FastAPI app shutting down. Closing global PDF browser session...")
-    close_global_pdf_session()
+    await close_global_pdf_session()
     logger.info("Global PDF browser session closed.")
 # --- END NEW ---
 
@@ -38,15 +39,15 @@ app = FastAPI(
 )
 
 @app.get('/company_card/{inn}')
-def get_company_card(inn: str):
+async def get_company_card(inn: str):
     """
     Retrieves general company information (card) for a given INN.
     This includes registration data and main activity.
     """
     logger.info(f"Received request for company_card with INN: {inn}")
     try:
-        with Browser(headless=True) as browser:
-            data = fetch_company_data(browser, inn, method='card')
+        async with Browser(headless=True) as browser:
+            data = await fetch_company_data(browser, inn, method='card')
             if data.get("error"):
                 raise HTTPException(status_code=404, detail=data["error"])
             return {'success': True, 'data': data}
@@ -57,14 +58,14 @@ def get_company_card(inn: str):
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
 
 @app.get('/company_finances/{inn}')
-def get_company_finances(inn: str):
+async def get_company_finances(inn: str):
     """
     Retrieves financial data for a given INN.
     """
     logger.info(f"Received request for company_finances with INN: {inn}")
     try:
-        with Browser(headless=True) as browser:
-            data = fetch_company_data(browser, inn, method='finances')
+        async with Browser(headless=True) as browser:
+            data = await fetch_company_data(browser, inn, method='finances')
             if data.get("error"):
                 raise HTTPException(status_code=404, detail=data["error"])
             return {'success': True, 'data': data}
@@ -75,15 +76,15 @@ def get_company_finances(inn: str):
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
 
 @app.get('/company_extended/{inn}')
-def get_company_extended(inn: str):
+async def get_company_extended(inn: str):
     """
     Retrieves extended company data (CEOs, founders, beneficiaries, employees_by_year, defendant_in_progress)
     from zachestnyibiznes.ru for a given INN.
     """
     logger.info(f"Received request for company_extended with INN: {inn}")
     try:
-        with Browser(headless=True) as browser:
-            data = run_extended_extraction(browser, inn)
+        async with Browser(headless=True) as browser:
+            data = await run_extended_extraction(browser, inn)
             if isinstance(data, dict) and data.get("error"):
                 raise HTTPException(status_code=404, detail=data["error"])
             return {'success': True, 'data': data}
@@ -94,13 +95,13 @@ def get_company_extended(inn: str):
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
 
 @app.get('/bankrot/{inn}')
-def get_bankruptcy_status(inn: str):
+async def get_bankruptcy_status(inn: str):
     """
     Checks if an individual is listed in the bankruptcy register for a given INN.
     """
     logger.info(f"Received request for bankruptcy status with INN: {inn}")
     try:
-        result = check_bankruptcy_status(inn)
+        result = await asyncio.to_thread(check_bankruptcy_status, inn)
         if "error" in result:
             if "not found" in result["error"].lower():
                  raise HTTPException(status_code=404, detail=result["error"])
@@ -114,7 +115,7 @@ def get_bankruptcy_status(inn: str):
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
 
 @app.get('/pdf_extract')
-def pdf_extract(url: HttpUrl = Query(..., description="The URL of the PDF file to extract text from.")):
+async def pdf_extract(url: HttpUrl = Query(..., description="The URL of the PDF file to extract text from.")):
     """
     Extracts text from a PDF file located at a given URL using a shared browser instance.
     """
@@ -122,7 +123,7 @@ def pdf_extract(url: HttpUrl = Query(..., description="The URL of the PDF file t
     try:
         # Pydantic's HttpUrl automatically validates and decodes the URL
         # This function now uses the single, shared browser session
-        result = extract_text_from_url(str(url))
+        result = await extract_text_from_url(str(url))
         if not result["success"]:
             raise HTTPException(status_code=400, detail=result["error"])
         return result
@@ -134,7 +135,7 @@ def pdf_extract(url: HttpUrl = Query(..., description="The URL of the PDF file t
 
 
 @app.get("/")
-def read_root():
+async def read_root():
     return {"message": "Welcome to the Company Data API. Visit /docs for documentation."}
 
 @app.get("/favicon.ico")

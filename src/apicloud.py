@@ -9,7 +9,7 @@ load_dotenv()
 API_URL = "https://api-cloud.ru/api/bankrot.php"
 API_TOKEN = os.getenv("api_cloud")
 
-def check_bankruptcy_status(inn: str) -> dict:
+async def check_bankruptcy_status(inn: str) -> dict:
     """
     Checks the bankruptcy status of an individual (физическое лицо) by their INN.
     
@@ -32,8 +32,8 @@ def check_bankruptcy_status(inn: str) -> dict:
 
     try:
         # The API documentation recommends a long timeout.
-        with httpx.Client(timeout=120.0) as client:
-            response = client.get(API_URL, params=params)
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.get(API_URL, params=params)
             response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
             
             data = response.json()

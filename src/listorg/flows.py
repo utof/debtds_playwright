@@ -1,13 +1,14 @@
 import re
-from patchright.sync_api import Page
+from patchright.async_api import Page
 from dotenv import load_dotenv
 import os
 from twocaptcha import TwoCaptcha
 from loguru import logger
+import asyncio
 
 load_dotenv()
 
-def find_company_data(page: Page) -> dict[str, str]:
+async def find_company_data(page: Page) -> dict[str, str]:
     """
     Extracts company data from a details page using a robust and universal algorithm.
     This function specifically targets the main details table by looking for an anchor text.
@@ -27,26 +28,26 @@ def find_company_data(page: Page) -> dict[str, str]:
     tbody_locator = page.locator('tbody:has-text("Полное юридическое наименование:")')
     
     # Wait for this specific table body to be visible to ensure it has loaded.
-    tbody_locator.wait_for(timeout=10000)
+    await tbody_locator.wait_for(timeout=10000)
 
     # Now, find all `tr` elements *only within that specific tbody*.
     # This prevents the loop from iterating over rows from other tables.
     row_locators = tbody_locator.locator("tr")
 
     # The rest of the logic remains the same
-    for row in row_locators.all():
+    for row in await row_locators.all():
         cells = row.locator("td")
         
-        if cells.count() >= 2:
+        if await cells.count() >= 2:
             key_cell = cells.nth(0)
             value_cell = cells.nth(1)
 
             # Extract and clean the key
-            key_text = key_cell.text_content() or ""
+            key_text = await key_cell.text_content() or ""
             key = key_text.strip().removesuffix(':').strip()
 
             # Extract and clean the value
-            value_text = value_cell.inner_text() or ""
+            value_text = await value_cell.inner_text() or ""
             value = re.sub(r'\s+', ' ', value_text).strip()
 
             if key:
@@ -55,7 +56,7 @@ def find_company_data(page: Page) -> dict[str, str]:
     return company_data
 
 
-def extract_main_activity(page: Page) -> dict:
+async def extract_main_activity(page: Page) -> dict:
     """
     Extracts the main business activity (ОКВЭД) from the company details page.
 
@@ -74,16 +75,16 @@ def extract_main_activity(page: Page) -> dict:
     p_locator = page.locator('p:has-text("Основной (по коду ОКВЭД ред.2)")')
 
     # Check if the element exists on the page before trying to extract data.
-    if p_locator.count() > 0:
+    if await p_locator.count() > 0:
         # Within that paragraph, find the link containing the activity code.
         anchor_locator = p_locator.locator("a[href*='/list?okved']")
 
-        if anchor_locator.count() > 0:
+        if await anchor_locator.count() > 0:
             # Extract the code (e.g., "49.41") from the link.
-            activity_code = anchor_locator.inner_text()
+            activity_code = await anchor_locator.inner_text()
             
             # Get the full text of the paragraph to extract the description.
-            full_text = p_locator.text_content()
+            full_text = await p_locator.text_content()
             
             description = ""
             # Split the string by the activity code to isolate the description part.
@@ -101,7 +102,7 @@ def extract_main_activity(page: Page) -> dict:
     # Return an empty dictionary if the main activity section wasn't found.
     return {}
 
-def parse_financial_data(page: Page, target_indicators: list[str] | None = None) -> dict:
+async def parse_financial_data(page: Page, target_indicators: list[str] | None = None) -> dict:
     """
     Parses the financial data table from the company's report page.
     The data is keyed by the financial indicator code.
@@ -117,25 +118,25 @@ def parse_financial_data(page: Page, target_indicators: list[str] | None = None)
         Example: {'Ф2.2110': {'name': 'Выручка', 'values': {'2023': '94208', '2022': '24755'}}}
     """
     report_link_locator = page.locator('a[href*="/report"]')
-    if report_link_locator.count() == 0:
+    if await report_link_locator.count() == 0:
         logger.warning("No report link found on the page.")
         return {}
     
     report_url = f"{page.url.rstrip('/')}/report"
-    page.goto(report_url, wait_until="domcontentloaded")
+    await page.goto(report_url, wait_until="domcontentloaded")
     
-    handle_captcha(page) # Check for captcha on the report page
+    await handle_captcha(page) # Check for captcha on the report page
 
     try:
         table_locator = page.locator("table#rep_table")
-        table_locator.wait_for(timeout=10000)
+        await table_locator.wait_for(timeout=10000)
     except Exception:
         logger.error("Financial report table (#rep_table) not found on the page.")
         return {}
 
     # Extract years from the header row
     header_row = table_locator.locator('tr:has-text("Показатель")').first
-    header_cells = header_row.locator("td.tth").all_text_contents()
+    header_cells = await header_row.locator("td.tth").all_text_contents()
     
     try:
         pokazatel_index = header_cells.index('Показатель')
@@ -146,26 +147,26 @@ def parse_financial_data(page: Page, target_indicators: list[str] | None = None)
 
     financial_data = {}
 
-    def parse_row(row_locator) -> tuple[str | None, dict | None]:
+    async def parse_row(row_locator) -> tuple[str | None, dict | None]:
         """
         Helper function to parse a single row locator.
         This is now more robust and doesn't rely on fixed cell indices for code/name.
         """
-        all_cells = row_locator.locator("td").all()
+        all_cells = await row_locator.locator("td").all()
         if not all_cells or len(all_cells) < len(years) + 3:
             return None, None
 
         # Explicitly find the code: the first 'td' with class 'tt_hide'
         code_cell = row_locator.locator("td.tt_hide").first
-        code = (code_cell.text_content() or "").strip()
+        code = (await code_cell.text_content() or "").strip()
 
         # Explicitly find the name: the 'td' that contains an 'a' tag
         name_cell = row_locator.locator("td > a").first
-        name_html = (name_cell.inner_html() or "").strip()
+        name_html = (await name_cell.inner_html() or "").strip()
         name = re.sub('<[^<]+?>', '', name_html).strip()
 
         if not code or not name:
-            logger.warning(f"Could not parse code or name for a row. HTML: {row_locator.inner_html()}")
+            logger.warning(f"Could not parse code or name for a row. HTML: {await row_locator.inner_html()}")
             return None, None
 
         # Data cells start after the first three columns (code, name, unit)
@@ -173,7 +174,7 @@ def parse_financial_data(page: Page, target_indicators: list[str] | None = None)
         values = {}
         for i, year in enumerate(years):
             if i < len(data_cells):
-                value = (data_cells[i].text_content() or "").strip()
+                value = (await data_cells[i].text_content() or "").strip()
                 values[year] = value
         
         return code, {"name": name, "values": values}
@@ -187,9 +188,9 @@ def parse_financial_data(page: Page, target_indicators: list[str] | None = None)
             # Use a comma for OR condition, separating two full selectors.
             selector = f'tr:has(a:text-is("{indicator}")), tr:has(td.tt_hide:text-is("{indicator}"))'
             rows = table_locator.locator(selector)
-            if rows.count() > 0:
+            if await rows.count() > 0:
                 row_locator = rows.first
-                code, data = parse_row(row_locator)
+                code, data = await parse_row(row_locator)
                 if code and data:
                     financial_data[code] = data
             else:
@@ -197,33 +198,33 @@ def parse_financial_data(page: Page, target_indicators: list[str] | None = None)
 
     else:
         # Original path: Iterate through all rows
-        rows = table_locator.locator("tbody > tr").all()
+        rows = await table_locator.locator("tbody > tr").all()
         for row in rows:
-            if "Другие показатели:" in row.inner_text():
+            if "Другие показатели:" in await row.inner_text():
                 break
             
             # Skip header-like rows that don't contain the necessary structure
-            if row.locator("td.tt_hide").count() == 0 or row.locator("td > a").count() == 0:
+            if await row.locator("td.tt_hide").count() == 0 or await row.locator("td > a").count() == 0:
                 continue
 
-            code, data = parse_row(row)
+            code, data = await parse_row(row)
             if code and data:
                 financial_data[code] = data
     
     return financial_data
 
-def handle_captcha(page: Page):
+async def handle_captcha(page: Page):
     """
     Detects and solves a reCAPTCHA v2 on the page.
     """
     captcha_locator = page.locator("span.h1:has-text('Проверка, что Вы не робот')")
-    if captcha_locator.count() > 0:
+    if await captcha_locator.count() > 0:
         logger.info("Captcha detected, attempting to solve...")
         
         # 1. Get website details for 2Captcha
         website_url = page.url
         sitekey_locator = page.locator(".g-recaptcha")
-        sitekey = sitekey_locator.get_attribute("data-sitekey")
+        sitekey = await sitekey_locator.get_attribute("data-sitekey")
 
         if not sitekey:
             logger.warning("Could not find reCAPTCHA sitekey.")
@@ -239,18 +240,19 @@ def handle_captcha(page: Page):
         
         try:
             logger.info(f"Submitting captcha to 2Captcha for URL: {website_url} with sitekey: {sitekey}")
-            result = solver.recaptcha(sitekey=sitekey, url=website_url)
+            # Run the blocking call in a separate thread
+            result = await asyncio.to_thread(solver.recaptcha, sitekey=sitekey, url=website_url)
             
             if result and 'code' in result:
                 token = result['code']
                 logger.info("Captcha solved, token received.")
                 
                 # 3. Inject the token and submit the form
-                page.evaluate(f"document.getElementById('g-recaptcha-response').innerHTML = '{token}';")
-                page.locator('input[type="submit"][name="submit"]').click()
+                await page.evaluate(f"document.getElementById('g-recaptcha-response').innerHTML = '{token}';")
+                await page.locator('input[type="submit"][name="submit"]').click()
                 
                 logger.info("Submitted captcha. Waiting for navigation...")
-                page.wait_for_load_state('domcontentloaded', timeout=60000)
+                await page.wait_for_load_state('domcontentloaded', timeout=60000)
                 logger.info("Page reloaded after captcha.")
             else:
                 logger.warning("2Captcha did not return a valid solution.")
