@@ -17,8 +17,8 @@ logger.remove()
 logger.add(sys.stderr, level="INFO")
 logger.add("logs/api_runs.log", rotation="1 day", level="INFO")
 
-# --- MODIFIED: Create a single, global browser instance ---
-browser_manager = Browser(headless=True)
+# --- MODIFIED: Create a single, global browser instance with persistent storage ---
+browser_manager = Browser(headless=True, datadir="datadir")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Company Data API",
     description="An API to fetch company card, financial, bankruptcy data, and extract text from PDFs.",
-    version="1.4.1", # Version bump for the fix
+    version="1.5.0", # Version bump for persistent context
     lifespan=lifespan
 )
 
