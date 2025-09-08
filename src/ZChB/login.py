@@ -9,9 +9,9 @@ from dotenv import load_dotenv
 from .handle_captcha import CaptchaHandler
 
 # Ensure UTF-8 encoding (handles BOMs if present)
-dotenv_path = Path(__file__).parent / ".env"
-load_dotenv(dotenv_path=dotenv_path, encoding="utf-8", override=True)
-
+# dotenv_path = Path(__file__).parent / ".env"
+# load_dotenv(dotenv_path=dotenv_path, encoding="utf-8", override=True)
+load_dotenv(encoding="utf-8", override=True)
 
 def require_env(key: str) -> str:
     """

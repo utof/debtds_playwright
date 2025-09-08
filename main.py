@@ -6,6 +6,7 @@ from src.browser import Browser
 # NEW: import the test/extended extractor
 from src.ZChB.main import run_test as run_extended_extraction  # <-- added
 from fastapi.responses import FileResponse
+from src.apicloud import check_bankruptcy_status  # Import the new bankruptcy check function
 
 # Configure Loguru
 logger.remove()
@@ -14,8 +15,8 @@ logger.add("logs/api_runs.log", rotation="1 day", level="INFO")
 
 app = FastAPI(
     title="Company Data API",
-    description="An API to fetch company card and financial data from list-org.com",
-    version="1.0.0"
+    description="An API to fetch company card, financial, and bankruptcy data.",
+    version="1.1.0"
 )
 
 @app.get('/company_card/{inn}')
@@ -75,6 +76,28 @@ def get_company_extended(inn: str):
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
+
+@app.get('/bankrot/{inn}')
+def get_bankruptcy_status(inn: str):
+    """
+    Checks if an individual is listed in the bankruptcy register for a given INN.
+    """
+    logger.info(f"Received request for bankruptcy status with INN: {inn}")
+    try:
+        result = check_bankruptcy_status(inn)
+        if "error" in result:
+            # Distinguish between not found (a valid business result) and an actual error
+            if "not found" in result["error"].lower():
+                 raise HTTPException(status_code=404, detail=result["error"])
+            else:
+                 raise HTTPException(status_code=500, detail=result["error"])
+        return {'success': True, 'data': result}
+    except Exception as e:
+        logger.error(f"Failed to process bankruptcy status for INN {inn}: {e}")
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
+
 
 @app.get("/")
 def read_root():
