@@ -45,12 +45,12 @@ async def check_bankruptcy_status(inn: str) -> dict:
             # "Информация не найдена" indicates the person is not listed as bankrupt.
             if data.get("message") == "Информация не найдена" or data.get("totalCount", 0) == 0:
                 logger.info(f"INN {inn} not found in bankruptcy register. Considered not bankrupt.")
-                return {"is_bankrupt": False, "message": "действующее ФЛ"}
+                return {"is_bankrupt": False, "message": "действующее ФЛ", "inn": inn}
             
             # If there are results, the person is considered bankrupt.
             if data.get("totalCount", 0) > 0 and "rez" in data:
                 logger.info(f"INN {inn} found in bankruptcy register.")
-                return {"is_bankrupt": True, "message": "банкрот", "data": data["rez"]}
+                return {"is_bankrupt": True, "message": "банкрот", "data": data["rez"], "inn": inn}
 
             # Fallback for unexpected response structure
             logger.warning(f"Unexpected API response structure for INN {inn}: {data}")
