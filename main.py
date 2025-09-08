@@ -1,5 +1,6 @@
 import sys
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, HttpUrl
 from src.listorg.main import run as fetch_company_data # Import the refactored function
 from loguru import logger
 from src.browser import Browser
@@ -7,6 +8,7 @@ from src.browser import Browser
 from src.ZChB.main import run_test as run_extended_extraction  # <-- added
 from fastapi.responses import FileResponse
 from src.apicloud import check_bankruptcy_status  # Import the new bankruptcy check function
+from src.pdf_extractor import extract_text_from_url # Import the new PDF extractor function
 
 # Configure Loguru
 logger.remove()
@@ -15,9 +17,13 @@ logger.add("logs/api_runs.log", rotation="1 day", level="INFO")
 
 app = FastAPI(
     title="Company Data API",
-    description="An API to fetch company card, financial, and bankruptcy data.",
-    version="1.1.0"
+    description="An API to fetch company card, financial, bankruptcy data, and extract text from PDF files.",
+    version="1.2.0"
 )
+
+# Pydantic model for the PDF extraction request
+class PDFRequest(BaseModel):
+    url: HttpUrl
 
 @app.get('/company_card/{inn}')
 def get_company_card(inn: str):
@@ -57,7 +63,6 @@ def get_company_finances(inn: str):
             raise e
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
 
-# NEW: extended data endpoint (CEOs, founders, beneficiaries, employees_by_year, defendant_in_progress)
 @app.get('/company_extended/{inn}')
 def get_company_extended(inn: str):
     """
@@ -86,7 +91,6 @@ def get_bankruptcy_status(inn: str):
     try:
         result = check_bankruptcy_status(inn)
         if "error" in result:
-            # Distinguish between not found (a valid business result) and an actual error
             if "not found" in result["error"].lower():
                  raise HTTPException(status_code=404, detail=result["error"])
             else:
@@ -94,6 +98,25 @@ def get_bankruptcy_status(inn: str):
         return {'success': True, 'data': result}
     except Exception as e:
         logger.error(f"Failed to process bankruptcy status for INN {inn}: {e}")
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
+
+@app.get('/pdf_extract')
+def pdf_extract(url: HttpUrl = Query(..., description="The URL of the PDF file to extract text from.")):
+    """
+    Extracts text from a PDF file located at a given URL.
+    The client is responsible for URL-encoding the provided URL.
+    """
+    logger.info(f"Received request to extract text from PDF at URL: {url}")
+    try:
+        # Pydantic's HttpUrl automatically validates and decodes the URL
+        result = extract_text_from_url(str(url))
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+    except Exception as e:
+        logger.error(f"Failed to process PDF extraction for URL {url}: {e}")
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
