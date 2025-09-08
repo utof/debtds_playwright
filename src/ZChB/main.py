@@ -21,41 +21,36 @@ from ..browser import Browser
 
 async def close_modal(page: Page):
     """
-    Closes the currently active modal by clicking its close button
-    and waits for it to become hidden. This version includes a fallback
-    to a direct JavaScript click for maximum reliability.
+    Closes the currently active modal by forcing a JavaScript click on its
+    close button and waits for it to become hidden. This is the most direct
+    and reliable method for this specific site.
     """
     try:
         modal_container = page.locator("#modal-template .modal-content:visible")
 
         if await modal_container.count() == 0:
-            logger.warning("close_modal was called, but no visible modal was found.")
-            await page.keyboard.press("Escape")
+            logger.warning("close_modal was called, but no visible modal was found. Skipping.")
             return
 
         close_button = modal_container.locator('button[data-dismiss="modal"]')
 
         if await close_button.count() > 0:
-            logger.info("Modal close button found. Attempting to close modal.")
+            logger.info("Modal close button found. Forcing JavaScript click to close modal.")
             
-            # Try a standard click first. It's cleaner if it works.
-            try:
-                await close_button.first.click(timeout=2000)
-            except Exception as e:
-                logger.warning(f"Standard click failed: {e}. Falling back to JavaScript click.")
-                # If it fails (e.g., timeout, obscured), immediately try JS click.
-                await close_button.first.evaluate("el => el.click()")
+            # --- FIX: Go directly to the reliable JS click ---
+            await close_button.first.evaluate("el => el.click()")
 
-            # After attempting a click, verify the modal is hidden.
+            # After the click, verify the modal is hidden.
             await modal_container.wait_for(state="hidden", timeout=5000)
             logger.info("Modal has been successfully closed.")
         else:
+            # Fallback if the close button itself is not found.
             logger.warning("Modal close button not found, falling back to pressing 'Escape'.")
             await page.keyboard.press("Escape")
             await modal_container.wait_for(state="hidden", timeout=5000)
 
     except Exception as e:
-        logger.error(f"An error occurred while closing the modal: {e}. Attempting to press 'Escape' as a fallback.")
+        logger.error(f"An error occurred while closing the modal: {e}. Attempting to press 'Escape' as a final fallback.")
         await page.keyboard.press("Escape")
 
 
