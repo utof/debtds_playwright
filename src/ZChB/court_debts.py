@@ -1,5 +1,6 @@
 import re
 from loguru import logger
+from patchright.async_api import Page
 
 UNIT_TO_MILLIONS = {
     "тыс": 0.001,
@@ -56,7 +57,7 @@ def _extract_count_and_amount(text: str) -> dict:
         "судебных дел на сумму(млн руб)": round(amount_mln, 6)  # keep sane precision
     }
 
-def extract_defendant_in_progress(page) -> dict:
+async def extract_defendant_in_progress(page: Page) -> dict:
     """
     Find the 'Ответчик' block and extract the current 'Рассматривается' stats.
     Returns JSON like:
@@ -64,7 +65,7 @@ def extract_defendant_in_progress(page) -> dict:
     """
     try:
         row = page.locator("div.row.m-b-5:has(div.col-md-4:has-text('Ответчик'))").first
-        row.wait_for(state="attached", timeout=5000)
+        await row.wait_for(state="attached", timeout=5000)
     except Exception:
         logger.warning("Ответчик row not found on the page.")
         return {}
@@ -74,13 +75,13 @@ def extract_defendant_in_progress(page) -> dict:
     line = right_col.locator("p:has-text('Рассматривается')").first
 
     try:
-        line.wait_for(state="visible", timeout=5000)
+        await line.wait_for(state="visible", timeout=5000)
     except Exception:
         logger.warning("No 'Рассматривается' line found under Ответчик.")
         return {}
 
-    # 3) Get the full text content (anchor + spans)
-    text = (line.text_content() or "").strip()
+    # 3) Get the full text content (anchor + spans) - THIS IS THE FIX
+    text = (await line.text_content() or "").strip()
     # Normalize whitespace/newlines
     text = " ".join(text.split())
     logger.debug(f"Extracting defendant in progress from text: {text}")
