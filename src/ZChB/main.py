@@ -12,7 +12,8 @@ from .flows import (
     extract_beneficiaries,
     extract_employees_by_year,
     click_founders,
-    extract_founders
+    extract_founders,
+    format_founders_data
 )
 from .login import login
 from .court_debts import extract_defendant_in_progress
@@ -104,6 +105,7 @@ async def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
 
         if await click_founders(page):
             results["founders"] = await extract_founders(page)
+            results["founders"]["formatted"] = format_founders_data(results["founders"])
             await close_modal(page)
             logger.info("founders modal processed and closed.")
         else:
@@ -143,14 +145,14 @@ async def main():
     logger.info(f"--- Starting new test session for INN: {test_inn} ---")
     
     try:
-        async with Browser() as browser:
-            final_data = await run_test(browser, test_inn)
-            output_filename = f"data/output/{test_inn}_test_data.json"
-            os.makedirs(os.path.dirname(output_filename), exist_ok=True)
-            with open(output_filename, "w", encoding="utf-8") as f:
-                json.dump(final_data, f, ensure_ascii=False, indent=4)
-            logger.success(f"Test run complete. Data saved to {output_filename}")
-            print(json.dumps(final_data, ensure_ascii=False, indent=4))
+        browser_manager = Browser(headless=True, datadir="datadir")
+        final_data = await run_test(browser_manager, test_inn)
+        output_filename = f"data/output/{test_inn}_test_data.json"
+        os.makedirs(os.path.dirname(output_filename), exist_ok=True)
+        with open(output_filename, "w", encoding="utf-8") as f:
+            json.dump(final_data, f, ensure_ascii=False, indent=4)
+        logger.success(f"Test run complete. Data saved to {output_filename}")
+        print(json.dumps(final_data, ensure_ascii=False, indent=4))
 
     except Exception as e:
         logger.exception(f"A critical error occurred in the main execution block: {e}")

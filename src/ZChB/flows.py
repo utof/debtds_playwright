@@ -127,6 +127,44 @@ async def click_ceos(page: Page) -> bool:
         logger.error(f"An error occurred while trying to open the CEO history modal: {e}")
         return False
 
+async def click_founders(page: Page) -> bool:
+    """
+    Finds and clicks the link to open the 'История изменений учредителей' modal.
+
+    It waits for the modal to become visible after the click.
+
+    Args:
+        page: The Playwright page object.
+
+    Returns:
+        True if the link was clicked and the modal appeared, False otherwise.
+    """
+    # Be flexible about the company name and quotes; just match the invariant part.
+    link_locator = page.locator('a[data-title*="История изменений учредителей"]')
+
+    if await link_locator.count() == 0:
+        logger.warning("The 'Founders History' link was not found on the page.")
+        return False
+
+    try:
+        logger.info("Clicking the 'Founders History' link...")
+        await link_locator.first.click()
+
+        # Wait for the modal title that contains the invariant text.
+        modal_title_locator = page.locator(
+            "div.modal-title:has-text('История изменений учредителей')"
+        )
+        await modal_title_locator.wait_for(state="visible", timeout=5000)
+
+        logger.success("Successfully clicked the link and the Founders history modal is visible.")
+        return True
+    except TimeoutError:
+        logger.error("Timed out waiting for the Founders history modal to appear after clicking the link.")
+        return False
+    except Exception as e:
+        logger.error(f"An error occurred while trying to open the Founders history modal: {e}")
+        return False
+
 async def extract_beneficiaries(page: Page) -> dict:
     """
     Finds the 'Бенефициары' (Beneficiaries) modal on the page and extracts data from its table.
@@ -261,45 +299,6 @@ async def extract_ceos(page: Page) -> dict:
     logger.info(f"Extracted CEO history for {len(ceos_by_date)} dates.")
     return ceos_by_date
 
-async def click_founders(page: Page) -> bool:
-    """
-    Finds and clicks the link to open the 'История изменений учредителей' modal.
-
-    It waits for the modal to become visible after the click.
-
-    Args:
-        page: The Playwright page object.
-
-    Returns:
-        True if the link was clicked and the modal appeared, False otherwise.
-    """
-    # Be flexible about the company name and quotes; just match the invariant part.
-    link_locator = page.locator('a[data-title*="История изменений учредителей"]')
-
-    if await link_locator.count() == 0:
-        logger.warning("The 'Founders History' link was not found on the page.")
-        return False
-
-    try:
-        logger.info("Clicking the 'Founders History' link...")
-        await link_locator.first.click()
-
-        # Wait for the modal title that contains the invariant text.
-        modal_title_locator = page.locator(
-            "div.modal-title:has-text('История изменений учредителей')"
-        )
-        await modal_title_locator.wait_for(state="visible", timeout=5000)
-
-        logger.success("Successfully clicked the link and the Founders history modal is visible.")
-        return True
-    except TimeoutError:
-        logger.error("Timed out waiting for the Founders history modal to appear after clicking the link.")
-        return False
-    except Exception as e:
-        logger.error(f"An error occurred while trying to open the Founders history modal: {e}")
-        return False
-
-
 async def extract_founders(page: Page) -> dict:
     """
     Extracts the 'История изменений учредителей' table grouped by date.
@@ -392,6 +391,49 @@ async def extract_founders(page: Page) -> dict:
     logger.info(f"Extracted founders history for {len(founders_by_date)} dates.")
     return founders_by_date
 
+def format_founders_data(founders_by_date: dict) -> dict:
+    from datetime import datetime
+
+    # Sort dates ascending
+    dates = sorted(founders_by_date.keys(), key=lambda d: datetime.strptime(d, "%d.%m.%Y"))
+
+    def short_name(full: str) -> str:
+        if not full:
+            return ""
+        parts = full.split()
+        if len(parts) >= 2:
+            return f"{parts[0]} {parts[1][0]}."
+        return full
+
+    result = {}
+    prev = {}
+
+    for date in dates:
+        current = {f["инн"]: f for f in founders_by_date[date]}
+        lines = []
+
+        # Detect leavers
+        for inn, f in prev.items():
+            if inn not in current:
+                lines.append(f"{short_name(f['учредитель']) or inn} вышел ({f['доля']})")
+
+        # Detect entrants + share changes
+        for inn, f in current.items():
+            name = short_name(f["учредитель"]) or inn
+            if inn not in prev:
+                lines.append(f"{name} вошёл ↑{f['доля']}")
+            else:
+                old_share = prev[inn]["доля"]
+                if old_share != f["доля"]:
+                    lines.append(f"{name} изменил долю: {old_share} → {f['доля']}")
+
+        if lines:
+            result[date] = lines
+
+        prev = current
+
+    return result
+ 
 
 async def extract_employees_by_year(page) -> dict:
     """
