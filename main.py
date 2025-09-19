@@ -64,24 +64,50 @@ async def get_company_card(inn: str):
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
 
 
-@app.get('/company_founders/{inn}')
-async def get_company_founders(inn: str):
+@app.get('/company_rdl/{inn}')
+async def get_company_rdl(
+    inn: str,
+    publish_date: str = Query(..., regex=r'^\d{2}\.\d{2}\.\d{4}$')
+):
     """
-    Retrieves information about the founders of a company for a given INN.
+    Returns the summarized RDL check for CEO + founders(≥20%) on the given publish_date.
+
+    Response format:
+    {
+      "success": True,
+      "data": {
+        "debtor_inn": "...",
+        "CEO_RDL": "да"/"нет",
+        "Founders_RDL": "да"/"нет",
+        "final_RDL": "да"/"нет",
+        "input_data": {
+          "Фамилия Имя Отчество": true/false,
+          ...
+        }
+      }
+    }
     """
-    logger.info(f"Received request for company_founders with INN: {inn}")
+    logger.info(f"Received request for company_rdl with INN={inn}, publish_date={publish_date}")
     if not browser_manager.is_connected():
         raise HTTPException(status_code=503, detail="Browser service is not available.")
+
     try:
-        # Use the shared browser context
-        data = await fetch_company_data(browser_manager.context, inn, method='founders')
-        if data.get("error"):
-            raise HTTPException(status_code=404, detail=data["error"])
-        return {'success': True, 'data': data}
+        result = await fetch_company_data(
+            browser_manager.context,
+            inn,
+            method='rdl',
+            publish_date=publish_date,  # new kwarg
+        )
+        if isinstance(result, dict) and result.get("error"):
+            raise HTTPException(status_code=404, detail=result["error"])
+
+        # Ensure the final payload shape
+        return {"success": True, "data": result}
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Failed to process company_founders for INN {inn}: {e}")
-        if isinstance(e, HTTPException):
-            raise e
+        logger.exception(f"Failed to process company_rdl for INN {inn}: {e}")
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {str(e)}")
 
 @app.get('/company_finances/{inn}')

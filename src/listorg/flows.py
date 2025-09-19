@@ -66,9 +66,9 @@ async def find_company_data(page: Page) -> dict[str, str]:
 
                     # Only set if we have at least one meaningful value
                     if position or person:
-                        company_data["ceo"] = {
-                            "position": position,
-                            "Руководитель": person,  # <- per your preference
+                        company_data["Руководитель"] = {
+                            "должность": position,
+                            "имя": person, 
                         }
                 except Exception:
                     # Don't fail the whole card parse if CEO parsing hiccups
