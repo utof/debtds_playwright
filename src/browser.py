@@ -1,4 +1,4 @@
-from playwright.async_api import async_playwright, Browser as PlaywrightBrowser, BrowserContext
+from patchright.async_api import async_playwright, Browser as PlaywrightBrowser, BrowserContext
 from loguru import logger
 
 class Browser:

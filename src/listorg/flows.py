@@ -52,8 +52,30 @@ async def find_company_data(page: Page) -> dict[str, str]:
 
             if key:
                 company_data[key] = value
+
+                # --- CEO extraction (special case) ---
+                # We keep the original "Руководитель" text value for backward compat,
+                # but also add a structured "ceo": {"position": ..., "name": ...}
+                if key == "Руководитель":
+                    try:
+                        # Position is in <span class="upper">...</span>
+                        pos_loc = value_cell.locator("span.upper").first
+                        name_loc = value_cell.locator("a.upper").first
+
+                        if await pos_loc.count() > 0 and await name_loc.count() > 0:
+                            position = (await pos_loc.inner_text() or "").strip()
+                            name = (await name_loc.inner_text() or "").strip()
+                            if position or name:
+                                company_data["ceo"] = {
+                                    "position": position,
+                                    "name": name,
+                                }
+                    except Exception:
+                        # Don't fail the whole card parse if CEO parsing hiccups
+                        pass
                 
     return company_data
+
 
 import re
 from playwright.async_api import Page
