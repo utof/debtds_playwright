@@ -50,29 +50,33 @@ async def find_company_data(page: Page) -> dict[str, str]:
             value_text = await value_cell.inner_text() or ""
             value = re.sub(r'\s+', ' ', value_text).strip()
 
-            if key:
-                company_data[key] = value
+            if not key:
+                continue
 
-                # --- CEO extraction (special case) ---
-                # We keep the original "Руководитель" text value for backward compat,
-                # but also add a structured "ceo": {"position": ..., "name": ...}
-                if key == "Руководитель":
-                    try:
-                        # Position is in <span class="upper">...</span>
-                        pos_loc = value_cell.locator("span.upper").first
-                        name_loc = value_cell.locator("a.upper").first
+            # --- CEO extraction (special case) ---
+            # If this row is "Руководитель", DO NOT store the flat string to avoid redundancy.
+            # Instead, extract a structured object and put it under "ceo".
+            if key == "Руководитель":
+                try:
+                    pos_loc = value_cell.locator("span.upper").first
+                    name_loc = value_cell.locator("a.upper").first
 
-                        if await pos_loc.count() > 0 and await name_loc.count() > 0:
-                            position = (await pos_loc.inner_text() or "").strip()
-                            name = (await name_loc.inner_text() or "").strip()
-                            if position or name:
-                                company_data["ceo"] = {
-                                    "position": position,
-                                    "name": name,
-                                }
-                    except Exception:
-                        # Don't fail the whole card parse if CEO parsing hiccups
-                        pass
+                    position = (await pos_loc.inner_text() or "").strip() if await pos_loc.count() > 0 else ""
+                    person = (await name_loc.inner_text() or "").strip() if await name_loc.count() > 0 else ""
+
+                    # Only set if we have at least one meaningful value
+                    if position or person:
+                        company_data["ceo"] = {
+                            "position": position,
+                            "Руководитель": person,  # <- per your preference
+                        }
+                except Exception:
+                    # Don't fail the whole card parse if CEO parsing hiccups
+                    pass
+                continue  # Skip assigning company_data["Руководитель"] = value
+
+            # Default behavior for regular rows
+            company_data[key] = value
                 
     return company_data
 
