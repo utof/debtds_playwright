@@ -1,7 +1,7 @@
 import asyncio
 from patchright.async_api import Browser as PlaywrightBrowser
 
-from .flows import extract_main_activity, find_company_data, parse_financial_data, handle_captcha
+from .flows import extract_main_activity, find_company_data, parse_financial_data, handle_captcha, extract_founders
 from ..utils import process_inn, calculate_financial_coefficients
 from loguru import logger
 import os
@@ -59,6 +59,11 @@ async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: s
             logger.info(f"Successfully retrieved financial data for INN: {inn}")
             coefficients = calculate_financial_coefficients(financial_data)
             return {"financials": financial_data, "coefficients": coefficients}
+
+        elif method == 'founders':
+            founders = await extract_founders(page)
+            logger.info(f"Successfully retrieved founders data for INN: {inn}")
+            return founders
         
         else:
             # Handle invalid method
@@ -79,10 +84,14 @@ async def main():
     inn = "1400013278"
     logger.add("data/logs/runs.log", rotation="1 day", level="INFO")
     try:
-        async with Browser() as browser:
-            jsonn = await run(browser, inn, "finances")
-            with open(f"{inn}_financial_data.json", "w", encoding="utf-8") as f:
+        browser = Browser(headless=False, datadir="datadir")
+        await browser.launch()
+        try:
+            jsonn = await run(browser.context, inn, "founders")
+        finally:
+            with open(f"{inn}_founders_data.json", "w", encoding="utf-8") as f:
                 json.dump(jsonn, f, ensure_ascii=False, indent=4)
+            await browser.close()
     except Exception as e:
         logger.exception(f"Unhandled exception in main execution: {e}")
         # Save error details to timestamped file

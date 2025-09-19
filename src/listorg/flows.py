@@ -55,6 +55,72 @@ async def find_company_data(page: Page) -> dict[str, str]:
                 
     return company_data
 
+import re
+from playwright.async_api import Page
+
+async def extract_founders(page: Page) -> dict:
+    """
+    Extracts founders from the '#founders' card.
+
+    Returns:
+        {
+          "Учредители": [
+            {"учредитель": "...", "инн": "...", "доля": "...", "доля_руб": "..."},
+            ...
+          ]
+        }
+        or {} if the section isn't present.
+    """
+    founders_card = page.locator("div#founders")
+    if await founders_card.count() == 0:
+        return {}
+
+    # Ensure the card is visible/loaded.
+    await founders_card.wait_for(state="visible", timeout=10000)
+
+    def clean(s: str) -> str:
+        return re.sub(r"\s+", " ", s).strip()
+
+    rows = founders_card.locator("table tbody tr")
+    items: list[dict[str, str]] = []
+
+    for row in await rows.all():
+        # Skip header rows (td.tth) and the "...показать все..." row (typically <td colspan>).
+        if await row.locator("td.tth").count() > 0:
+            continue
+        cells = row.locator("td")
+        cell_count = await cells.count()
+        if cell_count < 3:
+            continue  # nothing to parse
+
+        # Map columns robustly:
+        #  - Most pages: 4 tds => name, inn, share, amount
+        #  - Compact layouts may hide INN => 3 tds => name, share, amount
+        if cell_count >= 4:
+            name_el, inn_el, share_el, amount_el = cells.nth(0), cells.nth(1), cells.nth(2), cells.nth(3)
+            inn_text = await inn_el.inner_text()
+        else:  # cell_count == 3
+            name_el, share_el, amount_el = cells.nth(0), cells.nth(1), cells.nth(2)
+            inn_text = ""
+
+        name_text = await name_el.inner_text()
+        share_text = await share_el.inner_text()
+        amount_text = await amount_el.inner_text()
+
+        name = clean(name_text or "")
+        if not name:
+            continue  # skip malformed row
+
+        item = {
+            "учредитель": name,
+            "инн": clean(inn_text or ""),
+            "доля": clean(share_text or ""),
+            "доля_руб": clean(amount_text or ""),
+        }
+        items.append(item)
+
+    return {"Учредители": items} if items else {}
+
 
 async def extract_main_activity(page: Page) -> dict:
     """
