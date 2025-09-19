@@ -1,4 +1,4 @@
-from patchright.async_api import async_playwright, Browser as PlaywrightBrowser, BrowserContext
+from patchright.async_api import async_playwright, Playwright, BrowserContext
 from loguru import logger
 
 class Browser:
@@ -7,8 +7,8 @@ class Browser:
     def __init__(self, headless: bool = True, datadir: str | None = None):
         self._headless = headless
         self._datadir = datadir
-        self._playwright_context_manager: async_playwright | None = None
-        self._playwright: async_playwright | None = None
+        self._playwright_context_manager = None  # type: object | None
+        self._playwright: Playwright | None = None
         self.context: BrowserContext | None = None
 
     async def launch(self):
@@ -29,21 +29,27 @@ class Browser:
             headless=self._headless,
             channel="chrome",
         )
-
         logger.success("Persistent browser context is launched and ready.")
 
     async def close(self):
-        """Closes the browser context and stops the Playwright driver."""
+        # Close the persistent context first
         if self.context:
-            await self.context.close()
-            logger.info("Browser context closed.")
-            self.context = None
-        
-        if self._playwright_context_manager:
-            await self._playwright_context_manager.stop()
-            logger.info("Playwright driver stopped.")
-            self._playwright_context_manager = None
-            self._playwright = None
+            try:
+                await self.context.close()
+                logger.info("Browser context closed.")
+            finally:
+                self.context = None
+
+        # Then stop Playwright (note: call stop() on the Playwright instance)
+        if self._playwright:
+            try:
+                await self._playwright.stop()
+                logger.info("Playwright driver stopped.")
+            finally:
+                self._playwright = None
+
+        # We don't actually need the context manager after start(), but clear it anyway
+        self._playwright_context_manager = None
 
     def is_connected(self) -> bool:
         """
