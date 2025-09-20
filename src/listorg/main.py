@@ -62,7 +62,7 @@ async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: s
         if await page.locator("p:has-text('Найдено 0 организаций')").count() > 0:
             message = "Company with the specified INN not found."
             logger.warning(message)
-            return {"error": message}
+            return {"data": "нет данных о компании"}
 
         # Navigate to the company page
         await page.locator("a[href*='/company/']").first.click()
@@ -148,13 +148,28 @@ async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: s
             check_page: Page | None = None
             try:
                 check_page = await browser.new_page()
-                for person in ordered_names:
+                for idx, person in enumerate(ordered_names):
                     try:
                         res = await is_disqualified_on(check_page, person, publish_date)
                     except Exception as e:
                         logger.warning(f"is_disqualified_on failed for '{person}' on {publish_date}: {e}")
                         res = False  # fail safe
-                    input_data[person] = bool(res)
+                        
+
+                    # Decide label
+                    role_parts = []
+                    if include_ceo and idx == 0:  # first entry is always CEO if included
+                        role_parts.append("CEO")
+                    # check if this same person also appeared as founder (>=20%)
+                    if person in [f.get("учредитель") or f.get("founder") for f in founders_list]:
+                        role_parts.append("Основатель")
+
+                    if role_parts:
+                        label = f"{', '.join(role_parts)}: {person}"
+                    else:
+                        label = person
+
+                    input_data[label] = bool(res)
             finally:
                 if check_page:
                     await check_page.close()
@@ -198,7 +213,7 @@ async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: s
         else:
             # Handle invalid method
             logger.error(f"Invalid method specified: {method}")
-            return {"error": "Invalid method specified. Use 'card' or 'finances'."}
+            return {"error": "Invalid method specified."}
 
     except Exception as e:
         logger.exception(f"An error occurred during scraping for INN {inn}: {e}")
@@ -212,10 +227,11 @@ async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: s
 
 async def main():
     # inn = "1400013278"
-    inn = "6312126585"
+    inn = "6312126585" # RDL simple
+    inn = "3328452719" # RDL complex
     try:
         browser = Browser(headless=False, datadir="datadir")
-        await browser.launch()
+        await browser.launch() 
         try:
             jsonn = await run(browser.context, inn, "rdl", publish_date="26.03.2025")
         finally:
