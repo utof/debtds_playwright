@@ -151,10 +151,13 @@ async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: s
                 for idx, person in enumerate(ordered_names):
                     try:
                         res = await is_disqualified_on(check_page, person, publish_date)
-                    except Exception as e:
-                        logger.warning(f"is_disqualified_on failed for '{person}' on {publish_date}: {e}")
-                        res = False  # fail safe
-                        
+                    except Exception as e1:
+                        logger.warning(f"is_disqualified_on failed for '{person}' (1st try) on {publish_date}: {e1}")
+                        try:
+                            res = await is_disqualified_on(check_page, person, publish_date)
+                        except Exception as e2:
+                            logger.error(f"is_disqualified_on failed again for '{person}' on {publish_date}: {e2}")
+                            return {"error": f"is_disqualified_on failed for '{person}' twice: {e2}"}
 
                     # Decide label
                     role_parts = []

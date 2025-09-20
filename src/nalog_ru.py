@@ -40,6 +40,12 @@ async def is_disqualified_on(page: Page, name: str, date_str: str) -> bool:
     # We wait for any .prop.prop--details to appear OR for the search area to settle.
     # (Short-circuit after a reasonable timeout.)
     try:
+        await page.locator("div.blockUI.blockMsg.blockPage").wait_for(state="detached", timeout=20000)
+    except Exception:
+        # If it never appeared or disappears quickly, ignore
+        raise RuntimeError("Search results did not load in time or page structure changed.")
+
+    try:
         await page.locator("div.prop.prop--details").first.wait_for(timeout=2000)
     except Exception:
         # No blocks at all => definitely False
