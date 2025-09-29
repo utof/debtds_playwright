@@ -198,11 +198,59 @@ async def extract_start_price(page) -> float:
         n = await price_cells.count()
         if n == 0:
             return float("nan")
-        last_price_text = await price_cells.nth(n - 1).inner_text()
-        return _parse_price_to_float(last_price_text)
+        first_price_text = await price_cells.nth(0).inner_text()
+        return _parse_price_to_float(first_price_text)
     except Exception as e:
         logger.exception(f"extract_start_price failed: {e}")
         return float("nan")
+
+async def extract_prev_lots_count(page) -> int:
+    """
+    Extracts the integer in the very first child <span> inside the first '.prevLots' block.
+    Examples:
+      <span class="prevLots">
+        <span class="auction">2</span>
+        ...
+      </span>
+      -> returns 2
+
+      <span class="prevLots">
+        <span class="public">3</span>
+        ...
+      </span>
+      -> returns 3
+
+    Returns -1 when not found or not parseable.
+    """
+    try:
+        prev = page.locator("span.prevLots")
+        if await prev.count() == 0:
+            return -1
+
+        # First .prevLots element in the DOM:
+        first_prev = prev.nth(0)
+
+        # Very first *direct* child span
+        first_child_span = first_prev.locator(":scope > span")
+        n = await first_child_span.count()
+        if n == 0:
+            return -1
+
+        txt = await first_child_span.nth(0).inner_text()
+        txt = (txt or "").strip()
+        # Be strict: only digits expected
+        if not txt.isdigit():
+            # Fallback: try to pull digits out of any noisy text
+            import re
+            m = re.search(r"\d+", txt)
+            if not m:
+                return -1
+            txt = m.group(0)
+
+        return int(txt)
+    except Exception as e:
+        logger.exception(f"extract_prev_lots_count failed: {e}")
+        return -1
 
 async def extract_protocol_link(page) -> str:
     """
@@ -277,6 +325,7 @@ async def parse_lot(page) -> Dict[str, object]:
     protocol_link = await extract_protocol_link(page)
     debtor = await extract_bankrupt_info(page)
     announcement_text = await extract_announcement_text(page)
+    prev_lots_count = await extract_prev_lots_count(page)
 
     out = {
         "lot_link": lot_link,                               # string
@@ -291,6 +340,7 @@ async def parse_lot(page) -> Dict[str, object]:
         "bankrupt_name": debtor["bankrupt_name"],           # string
         "bankrupt_inn": debtor["bankrupt_inn"],             # string ("" if not present)
         "announcement_text": announcement_text,             # string (from div.lot_text)
+        "prev_lots_count": prev_lots_count                  # int (-1 if missing)
     }
     return out
 
