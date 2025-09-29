@@ -19,7 +19,7 @@ from urllib.parse import urlparse, parse_qs
 
 from loguru import logger
 
-from .ai_request import update_debtor_data
+from .ai_request import update_debtor_data, update_debtor_flags
 
 from .parse_lots_links import main as parse_lots_links
 from .parse_lot_data import parse_lot
@@ -182,9 +182,26 @@ async def run():
                     try:
                         logger.info(f"[{idx}/{total}] Running AI enrichment for lot {lot_id}")
                         enriched = update_debtor_data(data)
+                        enriched = update_debtor_flags(enriched)
+
+                        # 2a) Add counts
+                        debtors_count = max(
+                            len(enriched.get("debtor_inn", [])),
+                            len(enriched.get("debtor_ogrn", [])),
+                            len(enriched.get("debtor_name", [])),
+                        )
+                        court_cases_count = len(enriched.get("case_number", []))
+
+                        enriched["debtors_count"] = debtors_count
+                        enriched["court_cases_count"] = court_cases_count
+
+                        # 2b) Save enriched data
                         cache[lot_id]["data"] = enriched
                         _atomic_write_json(CACHE_FILE, cache)
-                        logger.info(f"[{idx}/{total}] AI enrichment done and saved for lot {lot_id}")
+                        logger.info(
+                            f"[{idx}/{total}] AI enrichment done for lot {lot_id} "
+                            f"(debtors_count={debtors_count}, court_cases_count={court_cases_count})"
+                        )
                     except Exception as e:
                         logger.exception(f"[{idx}/{total}] AI enrichment failed for lot {lot_id}: {e}")
                         # Do not overwrite raw parse; keep it as-is
