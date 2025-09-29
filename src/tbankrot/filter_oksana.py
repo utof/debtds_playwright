@@ -14,7 +14,7 @@ Purpose
 
 2) Optional enrichment (async):
    - Given an existing Playwright Page (to avoid reopening the browser), go through debtor INNs
-     and append company status into `lot["data"]["company_statuses"] = [{ "inn": ..., "status": ... }, ...]`.
+     and append company status into `lot["data"]["company_statuses"] = [{ "inn": ..., "company_status": ..., "Сырые Данные": ... }, ...]`.
    - Designed to support multiple INNs per lot, but by default only fetches the FIRST INN
      (set `fetch_all=True` to fetch all).
 
@@ -22,6 +22,7 @@ Purpose
    - Loads cache from "cache/lots_cache.json"
    - Applies the pure filter
    - Launches a single browser instance, creates a page, enriches filtered lots (FIRST INN per lot)
+   - Applies post-enrichment pruning by company_status rules
    - Saves to "debug/oksana_filter.json"
    - Prints a summary
 
@@ -33,6 +34,7 @@ Notes
 """
 
 import os
+import re
 import json
 import asyncio
 from datetime import datetime, timedelta
@@ -46,6 +48,9 @@ OUTPUT_FILE = "debug/oksana_filter.json"
 DATE_FMT = "%d.%m.%Y"  # e.g. "02.12.2025"
 
 NumberLike = Union[int, float, str]
+
+# For parsing a date from raw status text (first occurrence wins)
+DATE_RX = re.compile(r"\b(\d{2}\.\d{2}\.\d{4})\b")
 
 
 # ---------- Helpers (pure) ----------
@@ -85,6 +90,16 @@ def _as_list(v: Any) -> List[Any]:
     if isinstance(v, list):
         return v
     return [v]
+
+
+def _first_date_in_text(text: str) -> Optional[datetime]:
+    """Extract the first dd.mm.yyyy in a string, if any."""
+    if not text:
+        return None
+    m = DATE_RX.search(text)
+    if not m:
+        return None
+    return _parse_date(m.group(1))
 
 
 # ---------- Core: Pure filter ----------
@@ -191,6 +206,66 @@ async def enrich_with_status(
     return lots
 
 
+# ---------- Post-enrichment pruning ----------
+# Immediate exclusions (status alone is enough)
+_IMMEDIATE_EXCLUDE = {
+    "признан банкротом",
+    "исключен из егрюл: конкурсное производство",
+}
+
+# Conditional exclusions: exclude only if (today - date_in_raw) > 1095 days
+_CONDITIONAL_EXCLUDE = {
+    "исключен из егрюл: реорганизация",
+    "исключен из егрюл: недостоверность сведений",
+    "исключен из егрюл: иное",
+}
+
+def _should_exclude_status(company_status: str, raw_text: str, today: Optional[datetime] = None) -> bool:
+    """
+    Returns True if the given status (and raw text) matches the exclusion rules.
+    """
+    s = (company_status or "").strip().lower()
+    if not s:
+        return False
+
+    if s in _IMMEDIATE_EXCLUDE:
+        return True
+
+    if s in _CONDITIONAL_EXCLUDE:
+        dt = _first_date_in_text(company_status or "")
+        if not dt:
+            return False  # need a date to apply the 3-year rule
+        ref = today or datetime.today()
+        return (ref - dt).days > 1095
+
+    return False
+
+
+def prune_lots_by_company_status(lots: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """
+    Remove lots where ANY fetched company_status entry (for the fetched INNs)
+    triggers the exclusion rules.
+    """
+    pruned: Dict[str, Dict[str, Any]] = {}
+    today = datetime.today()
+
+    for lot_id, lot in lots.items():
+        data = lot.get("data", {}) or {}
+        statuses = data.get("company_statuses") or []
+
+        exclude = False
+        for entry in statuses:
+            cstat = (entry or {}).get("company_status", "")
+            raw = (entry or {}).get("Сырые Данные", "")
+            if _should_exclude_status(cstat, raw, today=today):
+                exclude = True
+                break
+
+        if not exclude:
+            pruned[lot_id] = lot
+
+    return pruned
+
 
 # ---------- Public convenience API ----------
 def run_filter_only(cache: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -210,27 +285,43 @@ async def run_filter_and_enrich_with_page(
     """
     Reusable from other code that already has a Page instance.
     - Does NOT save to disk.
-    - Returns the enriched, filtered lots.
+    - Returns the enriched, filtered lots (post-pruned by company_status rules).
     """
     filtered = filter_lots(cache)
     enriched = await enrich_with_status(page, filtered, get_status=get_status, fetch_all=fetch_all)
-    return enriched
+    pruned = prune_lots_by_company_status(enriched)
+    return pruned
 
 
 # ---------- CLI (__main__) ----------
 async def _main_async():
     # Lazy imports to avoid hard coupling when this module is imported purely for filtering.
-    # Try a few likely paths for Browser and get_company_status.
-    Browser = None
-    get_company_status = None
-
     # Resolve Browser
-    from ..browser import Browser
-
-
+    Browser = None
+    try:
+        from ..browser import Browser as _B  # type: ignore
+        Browser = _B
+    except Exception:
+        try:
+            from .browser import Browser as _B  # type: ignore
+            Browser = _B
+        except Exception:
+            from browser import Browser as _B  # type: ignore
+            Browser = _B
 
     # Resolve get_company_status
-    .companium_company_status import get_company_status  # type: ignore 
+    get_company_status = None
+    try:
+        from ..companium_company_status import get_company_status as _G  # type: ignore
+        get_company_status = _G
+    except Exception:
+        try:
+            from .companium_company_status import get_company_status as _G  # type: ignore
+            get_company_status = _G
+        except Exception:
+            from companium_company_status import get_company_status as _G  # type: ignore
+            get_company_status = _G
+
     # Load cache
     with open(CACHE_FILE, "r", encoding="utf-8") as f:
         cache = json.load(f)
@@ -254,11 +345,14 @@ async def _main_async():
     finally:
         await browser.close()
 
-    # Save enriched filtered lots
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(enriched, f, ensure_ascii=False, indent=2)
+    # Post-enrichment pruning
+    final_lots = prune_lots_by_company_status(enriched)
 
-    print(f"Enriched {len(enriched)} lots saved to {OUTPUT_FILE}")
+    # Save result
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        json.dump(final_lots, f, ensure_ascii=False, indent=2)
+
+    print(f"Enriched & pruned {len(final_lots)} lots saved to {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":
