@@ -312,3 +312,181 @@ def update_debtor_data(data: Dict[str, Any]) -> Dict[str, Any]:
         print(f"Непредвиденная ошибка при обработке ответа: {e}")
 
     return data
+
+
+def update_debtor_flags(data: dict) -> dict:
+    """
+    Sends a separate AI request to classify:
+      - foreign_debtor_flag: 0 (no foreign), 1 (mixed), or "иностранная" (all foreign)
+      - individuals: "физлицо" if exclusively individuals, else ""
+
+    Input:
+      data: {
+        "announcement_text": str,
+        ...
+      }
+
+    Output (mutates and returns data):
+      data["foreign_debtor_flag"] in {0, 1, "иностранная"}
+      data["individuals"] in {"физлицо", ""}
+    """
+    # Ensure defaults
+    if "foreign_debtor_flag" not in data:
+        data["foreign_debtor_flag"] = 0
+    if "individuals" not in data:
+        data["individuals"] = ""
+
+    load_dotenv()
+    api_key = os.getenv("OPENROUTER_APIKEY")
+    if not api_key:
+        print("Ошибка: переменная окружения OPENROUTER_APIKEY не установлена.")
+        return data
+
+    text = (data.get("announcement_text") or "").strip()
+
+    prompt = """
+Ты — эксперт по извлечению структурированных признаков из юридических объявлений о дебиторской задолженности.
+Задача: по полному тексту объявления (далее: announcement_text) определить два признака и вернуть СТРОГИЙ JSON без лишнего текста.
+
+Определения:
+- foreign_debtor_flag:
+  • 0 — если среди должников нет иностранных;
+  • 1 — если есть смешение: часть должников иностранные, часть — российские;
+  • "иностранная" — если все должники иностранные.
+- individuals:
+  • "физлицо" — если должники представлены ИСКЛЮЧИТЕЛЬНО как физические лица (население, граждане, люди), без упоминаний организаций;
+  • "" — во всех остальных случаях (включая смешанные списки, компании и т.п.).
+
+Используй ТОЛЬКО announcement_text. Не используй никаких других полей.
+Считай должниками всех упомянутых контрагентов/обязанных лиц, к которым заявлено право требования/задолженность.
+
+Признаки иностранной компании (эвристики, можно комбинировать):
+- Наличие латинских букв в наименовании (напр.: "Dilaver Endustriyel Urunleri Gida Sanayi Ve Ticaret LTD STI", "Atena OOO", "Vellia Corporation", "Siebtechnik GmbH", "OOO «EXPRESS MONEY»", "OOO «RM CAPITAL»", "AO «EKVITA INVEST»").
+- Иностранные организационно-правовые формы/аббревиатуры: GmbH, Inc., Ltd, LLP, PLC, SA/S.A., s.r.o., sro, BV, NV, SAS, SARL, Oy, AB, Kft, AS, OÜ, UAB, SIA и т.п.; а также русские транслитерации: "… Инк.", "… Гмбх", "Инкорпорейтед" и т.д. (например: "Хоневелл Интернешнл ИНК.", "ЛУВА Бизнес Гмбх").
+- Явные признаки зарубежной юрисдикции/адреса (страна, штат/провинция, город за пределами РФ) или фразы: "юридическое лицо, учрежденное по законодательству …" (пример: описание Honeywell Delaware, USA).
+- Валюта долга ≠ RUB (например: EUR, USD, CNY и др.) — это вспомогательный признак, при его наличии можно считать контрагента иностранным, если нет явных признаков российской компании.
+
+Признаки "физлицо":
+- Формулировки типа: "Право требования к физическим лицам …", "к физическому лицу", "к гражданину/гражданам", "населению".
+- Списки персональных имён без юр. форм ("Будо А. М.", "Круговых В.В.", "Зотов С. Н.", "Волкова Сергея Витальевича", "Симоненко В.А.", и т.п.).
+- Если одновременно упомянуты организации (ООО/АО/ПАО и т.п.) — НЕ ставь "физлицо".
+- По умолчанию ИП не считать "физлицо" для этого признака, если явно не указано, что рассматриваются именно "физические лица".
+
+Агрегация:
+- Если ВСЕ обнаруженные должники — иностранные → foreign_debtor_flag = "иностранная".
+- Если есть и иностранные, и российские → foreign_debtor_flag = 1.
+- Если иностранных нет → foreign_debtor_flag = 0.
+- individuals = "физлицо" только если должники представлены исключительно как физлица; иначе "".
+
+Формат ответа — СТРОГИЙ JSON, без комментариев и без обрамления ```:
+{
+  "foreign_debtor_flag": 0 | 1 | "иностранная",
+  "individuals": "физлицо" | ""
+}
+
+Примеры:
+
+[Пример: иностранные по названию]
+announcement_text: "Дебиторская задолженность DIV GmbH Hansaring 61, 50670 Koln, Germany … номинальной стоимостью 6 500 693,00 ЕВРО …"
+Результат:
+{"foreign_debtor_flag":"иностранная","individuals":""}
+
+[Пример: валюта CNY]
+announcement_text: "Права требования к 4 дебиторам в общем размере 928 710,37 CNY"
+Результат:
+{"foreign_debtor_flag":"иностранная","individuals":""}
+
+[Пример: смешанные]
+announcement_text: "Права требования к ООО «SMART QUALITY» и Honeywell International Inc. …"
+Результат:
+{"foreign_debtor_flag":1,"individuals":""}
+
+[Пример: физлица]
+announcement_text: "Право требования к физическим лицам в количестве 30 человек …"
+Результат:
+{"foreign_debtor_flag":0,"individuals":"физлицо"}
+
+Теперь обработай следующий текст и верни только JSON:
+announcement_text:
+{text}
+"""
+ 
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": OPENROUTER_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+    try:
+        resp = requests.post(OPENROUTER_API_URL, headers=headers, data=json.dumps(payload), timeout=60)
+        resp.raise_for_status()
+        response_json = resp.json()
+        content = (
+            response_json.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+        cleaned = _first_json_block(content)
+        if not cleaned:
+            return data
+
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            glued = re.sub(r"\s+", " ", cleaned).strip()
+            parsed = json.loads(glued)  # last-ditch attempt
+
+        if not isinstance(parsed, dict):
+            return data
+
+        raw_foreign = parsed.get("foreign_debtor_flag", data["foreign_debtor_flag"])
+        raw_indiv = parsed.get("individuals", data["individuals"])
+
+        # Normalize foreign_debtor_flag -> {0, 1, "иностранная"}
+        def norm_foreign(v):
+            if isinstance(v, str):
+                vs = v.strip().lower()
+                if vs in {"0", "none", "no", "нет", "domestic", "российская", "только российская"}:
+                    return 0
+                if vs in {"1", "some", "mixed", "смешанная", "частично", "да"}:
+                    return 1
+                if vs in {"иностранная", "иностранный", "all", "foreign", "all_foreign", "только иностранная", "полностью иностранная"}:
+                    return "иностранная"
+            if isinstance(v, (int, float)):
+                i = int(v)
+                if i == 0:
+                    return 0
+                if i == 1:
+                    return 1
+                if i >= 2:  # tolerate 2 meaning "all foreign"
+                    return "иностранная"
+            return 0
+
+        # Normalize individuals -> "физлицо" | ""
+        def norm_individuals(v):
+            if not isinstance(v, str):
+                return ""
+            vs = v.strip().lower()
+            if vs in {
+                "физлицо", "физ.лицо", "физические лица", "физлица",
+                "граждане", "гражданин", "individual", "natural_persons"
+            }:
+                return "физлицо"
+            return ""
+
+        data["foreign_debtor_flag"] = norm_foreign(raw_foreign)
+        data["individuals"] = norm_individuals(raw_indiv)
+
+    except requests.RequestException as e:
+        print(f"Ошибка запроса к API: {e}")
+    except json.JSONDecodeError:
+        print(f"Ошибка: не удалось распознать JSON в ответе: {cleaned if 'cleaned' in locals() else '<<empty>>'}")
+    except Exception as e:
+        print(f"Непредвиденная ошибка при обработке ответа: {e}")
+
+    return data
