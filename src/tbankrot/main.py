@@ -19,6 +19,8 @@ from urllib.parse import urlparse, parse_qs
 
 from loguru import logger
 
+from .ai_request import update_debtor_data
+
 from .parse_lots_links import main as parse_lots_links
 from .parse_lot_data import parse_lot
 from ..browser import Browser
@@ -175,6 +177,19 @@ async def run():
                 }
                 # Save cache after each successful lot
                 _atomic_write_json(CACHE_FILE, cache)
+
+                if not data.get("debtor_inn"):
+                    try:
+                        logger.info(f"[{idx}/{total}] Running AI enrichment for lot {lot_id}")
+                        enriched = update_debtor_data(data)
+                        cache[lot_id]["data"] = enriched
+                        _atomic_write_json(CACHE_FILE, cache)
+                        logger.info(f"[{idx}/{total}] AI enrichment done and saved for lot {lot_id}")
+                    except Exception as e:
+                        logger.exception(f"[{idx}/{total}] AI enrichment failed for lot {lot_id}: {e}")
+                        # Do not overwrite raw parse; keep it as-is
+                        continue
+                    
             except Exception as e:
                 logger.exception(f"[{idx}/{total}] Failed to parse lot {lot_id}: {e}")
                 # Try to persist current cache even on failure
