@@ -81,9 +81,6 @@ async def find_company_data(page: Page) -> dict[str, str]:
     return company_data
 
 
-import re
-from playwright.async_api import Page
-
 async def extract_founders(page: Page) -> dict:
     """
     Extracts founders from the '#founders' card.
