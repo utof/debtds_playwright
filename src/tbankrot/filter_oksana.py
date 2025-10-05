@@ -39,6 +39,7 @@ import json
 import asyncio
 from datetime import datetime, timedelta
 from typing import Any, Dict, Callable, Awaitable, Iterable, List, Optional, Union
+from ..rdl_batch import call_rdl_api, convert_publish_date, atomic_write_json  # type: ignore
 
 from .filter_oksana_status_utils import _norm_spaces, _normalize_company_status
 
@@ -61,6 +62,23 @@ def _parse_date(s: Optional[str]) -> Optional[datetime]:
         return datetime.strptime(s.strip(), DATE_FMT)
     except Exception:
         return None
+
+_PUBLISH_DATE_RX = re.compile(r"\b(\d{2}[.\-]\d{2}[.\-]\d{4})\b")
+
+def _extract_publish_date_dot(val: Optional[str]) -> Optional[str]:
+    """
+    Try to pull a dd.mm.yyyy (or dd-mm-yyyy) from strings like '22.09.2025 09:06'.
+    Then normalize to dd.mm.yyyy via convert_publish_date.
+    """
+    if not isinstance(val, str) or not val.strip():
+        return None
+    s = val.strip()
+    m = _PUBLISH_DATE_RX.search(s)
+    if not m:
+        return None
+    candidate = m.group(1)  # dd.mm.yyyy OR dd-mm-yyyy
+    return convert_publish_date(candidate)
+
 
 
 def _to_float(x: Optional[NumberLike]) -> Optional[float]:
@@ -206,6 +224,8 @@ async def enrich_with_status(
     return lots
 
 
+
+
 # ---------- Post-enrichment pruning ----------
 # Immediate exclusions (status alone is enough)
 _IMMEDIATE_EXCLUDE = {
@@ -266,6 +286,63 @@ def prune_lots_by_company_status(lots: Dict[str, Dict[str, Any]]) -> Dict[str, D
 
     return pruned
 
+async def enrich_with_rdl(lots: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """
+    For each lot, call local RDL API and store full payload under data['rdl_raw_data'].
+    Uses the FIRST debtor_inn (like status) and the lot's publish_date (normalized).
+    """
+    for lot_id, lot in lots.items():
+        data = lot.get("data", {}) or {}
+        inns = [str(x).strip() for x in _as_list(data.get("debtor_inn")) if str(x).strip()]
+        if not inns:
+            # Keep consistent shape; no INN => mark as insufficient
+            data["rdl_raw_data"] = {"final_RDL": "недостаточно данных: debtor_inn"}
+            lot["data"] = data
+            continue
+
+        inn = inns[0]
+        # Prefer publish_date from data (as in lots_cache.json)
+        pd_raw = data.get("publish_date")
+        pd_dot = _extract_publish_date_dot(pd_raw)
+
+        if not pd_dot:
+            data["rdl_raw_data"] = {"final_RDL": "недостаточно данных: publish_date"}
+            lot["data"] = data
+            continue
+
+        ok, payload, err = call_rdl_api(inn, pd_dot)
+        if ok and isinstance(payload, dict):
+            # Save full raw data (includes CEO_RDL/Founders_RDL/final_RDL/input_data)
+            data["rdl_raw_data"] = payload
+        else:
+            # Mirror rdl_batch semantics in a minimal way
+            if err == "no_company_data":
+                data["rdl_raw_data"] = {"final_RDL": "нет данных о компании"}
+            elif err == "inn_too_long":
+                data["rdl_raw_data"] = {"final_RDL": "пропуск: длинный инн"}
+            else:
+                data["rdl_raw_data"] = {"final_RDL": "error"}
+
+        lot["data"] = data
+
+    return lots
+
+
+def prune_lots_by_rdl(lots: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """
+    Exclude lots where data['rdl_raw_data']['final_RDL'] == 'да' (case-insensitive).
+    """
+    pruned: Dict[str, Dict[str, Any]] = {}
+    for lot_id, lot in lots.items():
+        data = lot.get("data", {}) or {}
+        rdl = data.get("rdl_raw_data") or {}
+        final = str(rdl.get("final_RDL", "")).strip().lower()
+        if final == "да":
+            # prune
+            continue
+        pruned[lot_id] = lot
+    return pruned
+
 
 # ---------- Public convenience API ----------
 def run_filter_only(cache: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -285,12 +362,15 @@ async def run_filter_and_enrich_with_page(
     """
     Reusable from other code that already has a Page instance.
     - Does NOT save to disk.
-    - Returns the enriched, filtered lots (post-pruned by company_status rules).
+    - Returns the enriched, filtered lots (post-pruned by company_status and RDL rules).
     """
     filtered = filter_lots(cache)
     enriched = await enrich_with_status(page, filtered, get_status=get_status, fetch_all=fetch_all)
-    pruned = prune_lots_by_company_status(enriched)
-    return pruned
+    pruned_by_status = prune_lots_by_company_status(enriched)
+    rdl_enriched = await enrich_with_rdl(pruned_by_status)
+    final_pruned = prune_lots_by_rdl(rdl_enriched)
+    return final_pruned
+
 
 
 # ---------- CLI (__main__) ----------
@@ -345,14 +425,18 @@ async def _main_async():
     finally:
         await browser.close()
 
-    # Post-enrichment pruning
-    final_lots = prune_lots_by_company_status(enriched)
+    # Post-enrichment pruning by company status
+    after_status = prune_lots_by_company_status(enriched)
 
-    # Save result
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(final_lots, f, ensure_ascii=False, indent=2)
+    # RDL enrichment + pruning
+    after_rdl = await enrich_with_rdl(after_status)
+    final_lots = prune_lots_by_rdl(after_rdl)
 
-    print(f"Enriched & pruned {len(final_lots)} lots saved to {OUTPUT_FILE}")
+    # Save result atomically
+    os.makedirs(os.path.dirname(OUTPUT_FILE) or ".", exist_ok=True)
+    atomic_write_json(final_lots, OUTPUT_FILE)
+
+    print(f"Enriched (status+RDL) & pruned {len(final_lots)} lots saved to {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":
