@@ -8,6 +8,55 @@ import asyncio
 
 load_dotenv()
 
+
+_INN_KPP_RE = re.compile(r'инн/кпп\s*:\s*([0-9]{10,12})\s*/', re.IGNORECASE)
+
+async def find_inn_by_orgn(page: Page, orgn: str | int) -> dict | str:
+    """
+    Navigate to list-org search by OGRN and extract the first INN from the first result.
+
+    Returns:
+      - {"inn": <number>} on success
+      - "оргн пуст" if orgn is empty/0
+      - "нет данных о компании" if no .org_list result found
+      - "есть компания, но нет инн" if a result exists but no INN is present
+    """
+    if orgn is None or str(orgn).strip() in ("", "0"):
+        return "оргн пуст"
+
+    try:
+        await page.goto(f"https://www.list-org.com/search?ogrn={orgn}", wait_until="domcontentloaded")
+        if handle_captcha:
+            try:
+                await handle_captcha(page)
+            except Exception:
+                pass  # be permissive
+
+        # First company card under .org_list
+        p = page.locator("div.org_list > p").first
+        if await p.count() == 0:
+            return "нет данных о компании"
+
+        text = (await p.text_content()) or ""
+        m = _INN_KPP_RE.search(text)
+        if not m:
+            return "есть компания, но нет инн"
+
+        inn_str = m.group(1)
+        try:
+            inn_num = int(inn_str)
+        except Exception:
+            # Fallback: if cast fails, still return as string (rare)
+            logger.warning(f"ИНН '{inn_str}' is not a clean integer; returning as string.")
+            return {"inn": inn_str}
+
+        return {"inn": inn_num}
+
+    except Exception as e:
+        logger.warning(f"find_inn_by_orgn failed for OGRN={orgn}: {e}")
+        return "нет данных о компании"
+
+
 async def find_company_data(page: Page) -> dict[str, str]:
     """
     Extracts company data from a details page using a robust and universal algorithm.

@@ -3,7 +3,7 @@ import re
 from typing_extensions import OrderedDict
 from patchright.async_api import Page, Browser as PlaywrightBrowser
 
-from .flows import extract_main_activity, find_company_data, parse_financial_data, handle_captcha, extract_founders
+from .flows import extract_main_activity, find_company_data, parse_financial_data, handle_captcha, extract_founders, find_inn_by_orgn
 from ..utils import process_inn, calculate_financial_coefficients
 from loguru import logger
 import os
@@ -36,8 +36,23 @@ def _is_konkursny(text: str | None) -> bool:
     # robust contains check (covers cases like "конкурсный управляющий", "и.о. конкурсного управляющего", etc.)
     return 'конкурсн' in t and 'управля' in t
 
+async def _goto_search_and_validate(page: Page, value: str | int) -> bool:
+    """
+    Navigates to list-org.com search by INN or ORGN and handles captcha.
 
-async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: str | None = None, publish_date: str | None = None) -> dict:
+    Returns:
+        True  → page contains at least one company result
+        False → "Найдено 0 организаций" found (no results)
+    """
+    await page.goto(f"https://www.list-org.com/search?val={value}", wait_until="domcontentloaded")
+    await handle_captcha(page)
+
+    if await page.locator("p:has-text('Найдено 0 организаций')").count() > 0:
+        logger.warning(f"No organizations found for search value={value}")
+        return False
+    return True
+
+async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: str | None = None, publish_date: str | None = None, orgn: str | None = None) -> dict:
     """
     Scrapes company data from list-org.com based on the INN.
 
@@ -49,20 +64,29 @@ async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: s
     Returns:
         A dictionary containing the requested company data.
     """
-    inn = process_inn(inn)
-    logger.info(f"Processing INN: {inn} for method: {method}")
+    inn = process_inn(inn) if inn else inn
+    logger.info(f"Processing method={method} for INN={inn} ORGN={orgn}")
 
     page = await browser.new_page()
     logger.debug("New page created.")
 
     try:
-        await page.goto(f"https://www.list-org.com/search?val={inn}", wait_until='domcontentloaded')
-        await handle_captcha(page)
+        # ---- ORGN → INN mode ----
+        if method == "find_inn_by_orgn":
+            if orgn is None or str(orgn).strip() in ("", "0"):
+                return {"data": "оргн пуст"}
 
-        if await page.locator("p:has-text('Найдено 0 организаций')").count() > 0:
-            message = "Company with the specified INN not found."
-            logger.warning(message)
-            return {"data": "нет данных о компании"}
+            found = await _goto_search_and_validate(page, orgn)
+            if not found:
+                return {"data": "нет данных о компании"}
+
+            data = await find_inn_by_orgn(page, orgn)
+            return {"data": data}
+
+        # ---- INN-based modes ----
+        found = await _goto_search_and_validate(page, inn)
+        if not found:
+            return {"data": "нет данных о компании"} 
 
         # Navigate to the company page
         await page.locator("a[href*='/company/']").first.click()
