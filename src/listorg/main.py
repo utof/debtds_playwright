@@ -1,17 +1,25 @@
 import asyncio
-import re
-from typing_extensions import OrderedDict
-from patchright.async_api import Page, Browser as PlaywrightBrowser
-
-from .flows import extract_main_activity, find_company_data, parse_financial_data, handle_captcha, extract_founders, find_inn_by_orgn
-from ..utils import process_inn, calculate_financial_coefficients
-from loguru import logger
-import os
 import datetime
 import json
-from ..nalog_ru import is_disqualified_on
+import os
+import re
+
+from loguru import logger
+from patchright.async_api import Browser as PlaywrightBrowser
+from patchright.async_api import Page
+from typing_extensions import OrderedDict
 
 from ..browser import Browser
+from ..nalog_ru import is_disqualified_on
+from ..utils import calculate_financial_coefficients, process_inn
+from .flows import (
+    extract_founders,
+    extract_main_activity,
+    find_company_data,
+    find_inn_by_orgn,
+    handle_captcha,
+    parse_financial_data,
+)
 
 _PERCENT_RE = re.compile(r'([0-9]+(?:[.,][0-9]+)?)\s*%')
 
@@ -52,7 +60,7 @@ async def _goto_search_and_validate(page: Page, value: str | int) -> bool:
         return False
     return True
 
-async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: str | None = None, publish_date: str | None = None, orgn: str | None = None) -> dict:
+async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: str | None = None, publish_date: str | None = None, orgn: str | None = None, codes_filter: str | None = None) -> dict:
     """
     Scrapes company data from list-org.com based on the INN.
 
@@ -87,17 +95,32 @@ async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: s
         found = await _goto_search_and_validate(page, inn)
         if not found:
             return {"data": "нет данных о компании"} 
-
+        
         # Navigate to the company page
         await page.locator("a[href*='/company/']").first.click()
         await page.wait_for_load_state("domcontentloaded")
         await handle_captcha(page)
-        required_codes = [
-        'Ф1.1200', 'Ф1.1240', 'Ф1.1250', 'Ф1.1400', 
-        'Ф1.1500', 'Ф1.1520', 'Ф1.1530', 'Ф1.1600', 'Ф2.2400']
 
-        # Execute logic based on the requested method
-        if method == 'card':
+        if method == 'finances':
+            if codes_filter:
+                code_parts = [code.strip() for code in codes_filter.split(',')]
+                required_codes = []
+                for part in code_parts:
+                    if part.startswith('24'):
+                        required_codes.append(f'Ф2.{part}')
+                    else:
+                        required_codes.append(f'Ф1.{part}')
+            else:
+                required_codes = [
+                    'Ф1.1200', 'Ф1.1240', 'Ф1.1250', 'Ф1.1400', 
+                    'Ф1.1500', 'Ф1.1520', 'Ф1.1530', 'Ф1.1600', 'Ф2.2400']
+
+            financial_data = await parse_financial_data(page, required_codes, years_filter)
+            logger.info(f"Successfully retrieved financial data for INN: {inn}")
+            coefficients = calculate_financial_coefficients(financial_data)
+            return {"financials": financial_data, "coefficients": coefficients}
+
+        elif method == 'card':
             company_data = await find_company_data(page)
             main_activity = await extract_main_activity(page)
             # Combine the results into a single dictionary
@@ -105,12 +128,6 @@ async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: s
             logger.info(f"Successfully retrieved card data for INN: {inn}")
             return result
         
-        elif method == 'finances':
-            financial_data = await parse_financial_data(page, required_codes, years_filter)
-            logger.info(f"Successfully retrieved financial data for INN: {inn}")
-            coefficients = calculate_financial_coefficients(financial_data)
-            return {"financials": financial_data, "coefficients": coefficients}
-
         elif method == 'rdl':
             if not publish_date:
                 return {"error": "publish_date is required in format dd.mm.yyyy"}
