@@ -1,13 +1,18 @@
 # ---------- Batch harvester: resume + incremental save ----------
-from urllib.parse import urljoin
-from typing import List
-import os
 import asyncio
 import json
-from patchright.async_api import Page  # or "from playwright.async_api import Page" if that’s what Browser uses
-from .parse_lot_data import parse_lot
-from ..browser import Browser  # your wrapper
+import os
+from typing import List
+from urllib.parse import urljoin
+
 from loguru import logger
+from patchright.async_api import (
+    Page,  # or "from playwright.async_api import Page" if that's what Browser uses
+)
+
+from ..browser import Browser  # your wrapper
+from .parse_lot_data import parse_lot
+
 
 def _atomic_write_json(data: dict, path: str):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -106,13 +111,13 @@ async def harvest_from_index(
     output_path: str,
     base_url: str = "https://tbankrot.ru",
     headless: bool = False,
-    sleep_between: float = 0.0,
 ):
     """
     - Load the index file that contains links/lots (produced by your list scraper).
     - Incrementally parse each lot page using parse_lot(page).
     - Save progress atomically after EACH lot.
     - Resume on reruns: skip entries with success=True in output JSON.
+    - Allow real-time control of delay between requests using arrow keys.
 
     Output schema:
     {
@@ -128,10 +133,17 @@ async def harvest_from_index(
       ]
     }
     """
+
+    # Setup keyboard listener for delay control
+    # setup_keyboard_listener()
+
     # 1) Load index (list of URLs to process)
     index_payload = _load_json_safely(list_json_path)
     target_urls = _extract_urls_from_index(index_payload)
     logger.info(f"Index contains {len(target_urls)} lot URLs to process.")
+    logger.info(
+        "Use Left Arrow to decrease delay (-1s) and Right Arrow to increase delay (+1s)"
+    )
 
     # 2) Load existing progress (for resume)
     progress_raw = _load_json_safely(output_path)
@@ -149,9 +161,9 @@ async def harvest_from_index(
     browser = None
     page = None
     try:
-        browser = Browser(headless=headless, datadir="datadir")
-        await browser.launch()
-        page = await browser.context.new_page()
+        # browser = Browser(headless=headless, datadir="datadir")
+        # await browser.launch()
+        # page = await browser.context.new_page()
 
         for idx, rel_or_abs in enumerate(target_urls, 1):
             # Skip already successful
@@ -161,7 +173,9 @@ async def harvest_from_index(
                 continue
 
             url = urljoin(base_url, rel_or_abs)
-            logger.info(f"[{idx}/{len(target_urls)}] Parsing: {url}")
+            logger.info(
+                f"[{idx}/{len(target_urls)}] Parsing: {url} (Current delay: {current_delay}s)"
+            )
 
             record = {
                 "url": rel_or_abs,
@@ -171,8 +185,8 @@ async def harvest_from_index(
             }
 
             try:
-                await page.goto(url, wait_until="domcontentloaded")
-                parsed = await parse_lot(page)  # uses your existing extractor pipeline
+                # await page.goto(url, wait_until="domcontentloaded")
+                parsed = await parse_lot(url)  # uses your existing extractor pipeline
                 record["data"] = parsed
                 record["success"] = True
                 record["error"] = ""
@@ -188,8 +202,13 @@ async def harvest_from_index(
             _upsert_item(progress, p_index, record)
             _atomic_write_json(progress, output_path)
 
-            if sleep_between > 0:
-                await asyncio.sleep(sleep_between)
+            # Get current delay value (thread-safe)
+            with delay_lock:
+                delay = current_delay
+
+            # Apply delay if greater than 0
+            if delay > 0:
+                await asyncio.sleep(delay)
 
     except Exception as e:
         logger.exception(f"Harvester fatal error: {e}")
@@ -221,7 +240,7 @@ async def _run_batch():
         output_path=output_path,
         base_url="https://tbankrot.ru",
         headless=False,
-        sleep_between=0.0,  # add a pause if rate-limiting is needed
+        sleep_between=2.0,  # Initial delay of 2 seconds
     )
 
 
