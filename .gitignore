@@ -8,6 +8,7 @@ datadir
 *.html
 *.png
 debug
+cache
 .env
 # Python-generated files
 __pycache__/

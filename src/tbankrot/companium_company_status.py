@@ -1,4 +1,4 @@
-# src/companium/status_scraper.py
+# src/companium/companium_company_status.py
 import asyncio
 from typing import Optional
 

@@ -6,11 +6,11 @@ from typing import List
 from urllib.parse import urljoin
 
 from loguru import logger
-from patchright.async_api import (
-    Page,  # or "from playwright.async_api import Page" if that's what Browser uses
-)
 
-from ..browser import Browser  # your wrapper
+# from patchright.async_api import (
+#     Page,  # or "from playwright.async_api import Page" if that's what Browser uses
+# )
+# from ..browser import Browser  # your wrapper
 from .parse_lot_data import parse_lot
 
 
@@ -159,7 +159,7 @@ async def harvest_from_index(
 
     # 3) Launch browser once, reuse the page
     browser = None
-    page = None
+    # page = None
     try:
         # browser = Browser(headless=headless, datadir="datadir")
         # await browser.launch()
@@ -173,9 +173,7 @@ async def harvest_from_index(
                 continue
 
             url = urljoin(base_url, rel_or_abs)
-            logger.info(
-                f"[{idx}/{len(target_urls)}] Parsing: {url} (Current delay: {current_delay}s)"
-            )
+            logger.info(f"[{idx}/{len(target_urls)}] Parsing: {url}")
 
             record = {
                 "url": rel_or_abs,
@@ -202,13 +200,6 @@ async def harvest_from_index(
             _upsert_item(progress, p_index, record)
             _atomic_write_json(progress, output_path)
 
-            # Get current delay value (thread-safe)
-            with delay_lock:
-                delay = current_delay
-
-            # Apply delay if greater than 0
-            if delay > 0:
-                await asyncio.sleep(delay)
 
     except Exception as e:
         logger.exception(f"Harvester fatal error: {e}")
