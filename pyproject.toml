@@ -16,4 +16,6 @@ dependencies = [
     "pypdf2>=3.0.1",
     "selenium>=4.35.0",
     "webdriver-manager>=4.0.2",
+    "pandas>=2.3.3",
+    "openpyxl>=3.1.5",
 ]

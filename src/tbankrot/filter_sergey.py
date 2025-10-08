@@ -27,6 +27,228 @@ YearsDict = Dict[str | int, float | int | str | None]
 
 PREF_YEARS_ORDER = [2025, 2024, 2023, 2022]  # prefer newer if present
 
+# ───────────────────────── Export helpers ─────────────────────────
+
+
+def process_batch_for_export(
+    input_path: str | Path = "debug/lot_details_with_finances_analyzed.json",
+    *,
+    keep_only_autopass: bool = False,  # Step 1: drop items where autopass == False
+    drop_financials: bool = False,  # Step 4: drop finances_data.financials
+) -> list[dict]:
+    """
+    Load the JSON produced by analyze_lots_finances_batch (the _analyzed file by default),
+    optionally filter items, and return a *list of cleaned data dicts* (no file is written).
+
+    Steps (matching your spec):
+      1) (optional via keep_only_autopass) remove items with autopass: false
+      2) flatten one level: each item becomes item["data"] (this step is *on*; see FLATTEN_TO_DATA)
+      3) remove 'raw_api_response'
+      4) (optional via drop_financials) remove 'financials' inside 'finances_data'
+      5) remove 'prev_lots_count'
+    """
+    path = Path(input_path)
+    if not path.exists():
+        logger.warning(
+            f"[export] Input file {input_path} does not exist. Returning empty list."
+        )
+        return []
+
+    with open(path, "r", encoding="utf-8") as f:
+        batch = json.load(f)
+
+    items = batch.get("items", [])
+    processed: list[dict] = []
+
+    # This is the always-on flatten step per your request.
+    # If you want to disable it later, just set this to False or comment this line.
+    FLATTEN_TO_DATA = True
+
+    for it in items:
+        obj = it
+        if FLATTEN_TO_DATA:
+            obj = it.get("data", {}) if isinstance(it, dict) else {}
+
+        if not isinstance(obj, dict):
+            continue
+
+        # Step 1: keep only autopass==True if requested
+        if keep_only_autopass:
+            autopass = (
+                obj.get("markers_analysis", {}).get("autopass", {}).get("pass", False)
+            )
+            if not autopass:
+                continue
+
+        # Work on a shallow copy to avoid mutating original data attached to batch
+        row = dict(obj)
+
+        # Step 3: remove raw_api_response
+        row.pop("raw_api_response", None)
+
+        # Step 4: optionally drop finances_data.financials (keep coefficients etc.)
+        if drop_financials:
+            fd = row.get("finances_data")
+            if isinstance(fd, dict):
+                fd = dict(fd)
+                fd.pop("financials", None)
+                row["finances_data"] = fd
+
+        # Step 5: remove prev_lots_count
+        row.pop("prev_lots_count", None)
+
+        processed.append(row)
+
+    logger.info(f"[export] Prepared {len(processed)}/{len(items)} items for export")
+    return processed
+
+
+def save_items_to_xlsx(
+    items: list[dict],
+    output_path: str | Path = "debug/name.xlsx",
+) -> str:
+    """
+    Save items (from process_batch_for_export) into an .xlsx:
+      • Each item = 1 row, each key/value = a column.
+      • If a value is a list → join elements with '\\n'
+      • Remove 'coefficients' from finances_data (do not export them)
+      • 'financials' is collapsed into a single text column:
+         'ФХ.ХХХХ NAME\\n  2022: VAL\\n  2023: VAL\\n ...' (years shown earliest→latest)
+      • 'markers' column (from markers_analysis):
+         'marker: value\\n\\n totals: key: val' (all totals listed)
+    """
+    try:
+        import pandas as pd  # local import to avoid hard dependency at module import time
+    except Exception as e:
+        logger.error(f"[export] pandas is required to export xlsx: {e}")
+        raise
+
+    def _to_str(v) -> str:
+        """Generic stringify with special handling for lists (newline-join) and dicts (compact JSON)."""
+        if isinstance(v, list):
+
+            def _elem_to_str(x):
+                if isinstance(x, (dict, list)):
+                    return json.dumps(x, ensure_ascii=False)
+                return "" if x is None else str(x)
+
+            return "\n".join(_elem_to_str(x) for x in v)
+        if isinstance(v, dict):
+            return json.dumps(v, ensure_ascii=False)
+        return "" if v is None else str(v)
+
+    def _render_financials(financials_block: dict) -> str:
+        """
+        Render finances_data['financials'] into the specified multiline format.
+        Expects shape like {"Ф1.1150": {"name": "...", "values": {"2024":"...", "2023":"..."}}}
+        """
+        if not isinstance(financials_block, dict):
+            return ""
+
+        # Sort by numeric code inside "Ф?.XXXX" if possible; else by key.
+        def _code_num(k: str) -> tuple[int, str]:
+            # extract last 4+ digits from the key to sort: e.g. "Ф1.1200" -> 1200
+            digits = "".join(ch for ch in k if ch.isdigit())
+            # digits may include the "1" before dot: prefer the tail 4 if present
+            if len(digits) >= 4:
+                try:
+                    return int(digits[-4:]), k
+                except Exception:
+                    pass
+            try:
+                return int(digits), k
+            except Exception:
+                return (10**9, k)
+
+        parts: list[str] = []
+        for fkey in sorted(financials_block.keys(), key=_code_num):
+            block = financials_block.get(fkey) or {}
+            name = (block.get("name") or "").strip()
+            vals = block.get("values") or {}
+            # years earliest→latest
+            try:
+                years_sorted = sorted(int(y) for y in vals.keys())
+            except Exception:
+                # fallback to original order if keys are non-int
+                years_sorted = list(vals.keys())
+            header = f"{fkey} {name}".strip()
+            parts.append(header)
+            for y in years_sorted:
+                y_str = str(y)
+                v_raw = vals.get(y_str, "")
+                v_norm = (
+                    v_raw
+                    if isinstance(v_raw, str)
+                    else ("" if v_raw is None else str(v_raw))
+                )
+                parts.append(f"  {y_str}: {v_norm}")
+        return "\n".join(parts)
+
+    def _render_markers(markers_analysis: dict) -> str:
+        if not isinstance(markers_analysis, dict):
+            return ""
+        markers = markers_analysis.get("markers") or {}
+        totals = markers_analysis.get("totals") or {}
+        out: list[str] = []
+
+        # sort markers by numeric key if possible
+        def _mk_key(k):
+            try:
+                return int(k)
+            except Exception:
+                return k
+
+        for k in sorted(markers.keys(), key=_mk_key):
+            out.append(f"{k}: {markers.get(k)}")
+        out.append("")  # blank line
+        out.append("totals:")
+        for k, v in totals.items():
+            out.append(f"  {k}: {v}")
+        return "\n".join(out).strip()
+
+    # Build rows
+    flat_rows: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        row: dict[str, str] = {}
+        # We will replace 'finances_data' and 'markers_analysis' with special columns,
+        # and pass through everything else (lists -> newline-joined; dicts -> JSON).
+        finances_data = item.get("finances_data")
+        markers_analysis = item.get("markers_analysis")
+
+        for k, v in item.items():
+            if k in ("finances_data", "markers_analysis"):
+                continue  # handled below
+            row[k] = _to_str(v)
+
+        # finances_data → financials column only (drop coefficients)
+        if isinstance(finances_data, dict):
+            financials = finances_data.get("financials")
+            row["financials"] = (
+                _render_financials(financials) if isinstance(financials, dict) else ""
+            )
+
+        # markers_analysis → markers column
+        if isinstance(markers_analysis, dict):
+            row["markers"] = _render_markers(markers_analysis)
+
+        flat_rows.append(row)
+
+    df = pd.DataFrame(flat_rows)
+
+    out_path = Path(output_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Write
+    try:
+        df.to_excel(out_path, index=False)
+    except Exception as e:
+        logger.error(f"[export] Failed to write {out_path}: {e}")
+        raise
+
+    logger.info(f"[export] Wrote {len(df)} rows to {out_path}")
+    return str(out_path)
+
 
 def _coerce_number(v) -> Optional[float]:
     """
@@ -1273,108 +1495,11 @@ def _demo() -> None:
     for k, v in results.items():
         print(f"Marker {k:>2}: {v} points")
     print(f"---\nTOTAL: {total_points} points\n")
-    analyze_lots_finances_batch()
+    # analyze_lots_finances_batch()
+    processed = process_batch_for_export(keep_only_autopass=True, drop_financials=False)
+    save_items_to_xlsx(processed, output_path="debug/lot_export.xlsx")
     logger.info(f"Full marker check complete. Total={total_points}")
 
 if __name__ == "__main__":
     # Uncomment to run the demo
     _demo()
-
-# def analyze_lots_finances_batch(
-#     input_path: str = "debug/lot_details_with_finances.json", output_path: str = None
-# ) -> None:
-#     """
-#     Load the batch JSON, analyze finances_data for each lot using markers,
-#     add results under "markers_analysis" key, and save to a new output file.
-
-#     Args:
-#         input_path: Path to input JSON file
-#         output_path: Path to output JSON file (defaults to input_path with '_analyzed' suffix)
-#     """
-#     path = Path(input_path)
-#     if not path.exists():
-#         logger.warning(f"Input file {input_path} does not exist. Skipping.")
-#         return
-
-#     # Determine output path
-#     if output_path is None:
-#         output_path = path.with_stem(path.stem + "_analyzed")
-#     output = Path(output_path)
-
-#     # Load JSON
-#     with open(path, "r", encoding="utf-8") as f:
-#         batch_data = json.load(f)
-
-#     items = batch_data.get("items", [])
-#     updated_count = 0
-
-#     for item in items:
-#         data = item.get("data", {})
-#         finances_data = data.get("finances_data", {})
-
-#         # Check if already analyzed
-#         if "markers_analysis" in data:
-#             logger.info(f"Skipping already analyzed item: {item.get('url', 'unknown')}")
-#             continue
-
-#         # Extract raw financials (handle error cases)
-#         raw_financials = finances_data.get("financials", {})
-#         if isinstance(raw_financials, dict) and "error" in raw_financials:
-#             data["markers_analysis"] = {
-#                 "error": f"Financials fetch error: {raw_financials['error']}",
-#                 "markers": {},
-#                 "totals": {"sum": 0},
-#                 "autopass": {"pass": False, "reason": None},
-#             }
-#             updated_count += 1
-#             continue
-
-#         # DIAGNOSTIC LOGS: Add these to inspect per-item data
-#         url = item.get("url", "unknown")
-#         inn = data.get("bankrupt_inn", "unknown")
-#         logger.info(f"[DIAG] Processing lot: URL={url}, INN={inn}")
-#         if raw_financials:
-#             sample_keys = list(raw_financials.keys())[:3]  # First 3 keys
-#             sample_vals = {
-#                 k: list(raw_financials[k].get("values", {}).items())[:2]
-#                 for k in sample_keys
-#             }  # Sample values per key
-#             logger.info(
-#                 f"[DIAG] Raw financials sample for {inn}: keys={sample_keys}, sample_values={sample_vals}"
-#             )
-#         else:
-#             logger.info(f"[DIAG] Empty raw_financials for {inn}")
-
-#         # Run markers (financials only; coefficients not used in current markers)
-#         try:
-#             analysis = calculate_all_markers_from_json(raw_financials)
-#             # DIAGNOSTIC: Log normalized sample and total score
-#             normalized = normalize_rsbu_json(raw_financials)
-#             sample_norm = {
-#                 k: dict(list(v.items())[:2]) for k, v in list(normalized.items())[:3]
-#             }  # Sample normalized
-#             logger.info(
-#                 f"[DIAG] Normalized sample for {inn}: {sample_norm}, total_points={analysis['totals']['sum']}"
-#             )
-#             data["markers_analysis"] = analysis
-#             logger.info(
-#                 f"Analyzed item {url}: total points {analysis['totals']['sum']}"
-#             )
-#             updated_count += 1
-#         except Exception as e:
-#             logger.error(f"Error analyzing item {url}: {e}")
-#             data["markers_analysis"] = {
-#                 "error": str(e),
-#                 "markers": {},
-#                 "totals": {"sum": 0},
-#                 "autopass": {"pass": False, "reason": None},
-#             }
-#             updated_count += 1
-
-#     # Save to output file
-#     with open(output, "w", encoding="utf-8") as f:
-#         json.dump(batch_data, f, ensure_ascii=False, indent=2)
-
-#     logger.info(
-#         f"Batch analysis complete. Updated {updated_count}/{len(items)} items. Output saved to {output_path}"
-#     )

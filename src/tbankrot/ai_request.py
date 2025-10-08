@@ -1,10 +1,10 @@
+import json
 import os
 import re
-import json
-import requests
 from typing import Any, Dict, List, Union
-from dotenv import load_dotenv
 
+import requests
+from dotenv import load_dotenv
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = "google/gemini-2.5-flash-lite"
