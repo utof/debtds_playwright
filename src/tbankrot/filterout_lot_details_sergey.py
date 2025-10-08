@@ -1,5 +1,12 @@
 import json
 from datetime import datetime, timedelta
+from typing import Any, Dict
+
+# Global filtering flags for INN validation
+REMOVE_EMPTY_INN = True  # Set to False to keep items with empty bankrupt_inn
+REMOVE_INVALID_INN_LENGTH = (
+    True  # Set to False to keep items with INN not 9 or 10 digits
+)
 
 
 def parse_date(date_str: str) -> datetime | None:
@@ -11,9 +18,18 @@ def parse_date(date_str: str) -> datetime | None:
     except ValueError:
         return None
 
+def validate_inn(inn: str) -> bool:
+    """Validate INN: must be 9 or 10 digits, not empty."""
+    if not inn or inn.strip() == "":
+        return False
+    # Remove any non-digit characters and check length
+    digits_only = "".join(filter(str.isdigit, inn.strip()))
+    return len(digits_only) in (9, 10)
+
+
 def filter_lot_details():
     input_file = "debug/lot_details.json"
-    output_file = "debug/lot_details_filtered.json"
+    output_file = "debug/lot_details_filtered_without_invalid_inn.json"
     
     # Get current date (today)
     today = datetime.now().date()
@@ -25,6 +41,8 @@ def filter_lot_details():
     print(f"- KEEP if application_end_date empty OR >= {tomorrow} (enough time)")
     print(f"- REMOVE if auction_end_date <= {future_14_days} (too soon)")
     print(f"- KEEP if auction_end_date empty OR > {future_14_days} (enough time)")
+    print(f"- REMOVE empty INN: {REMOVE_EMPTY_INN}")
+    print(f"- REMOVE invalid INN length: {REMOVE_INVALID_INN_LENGTH}")
 
     try:
         # Read the JSON file
@@ -36,51 +54,72 @@ def filter_lot_details():
         removed_count = 0
         keep_reasons = []
         remove_reasons = []
+        inn_empty_count = 0
+        inn_invalid_count = 0
         
         for item in data.get('items', []):
             data_section = item.get('data', {})
             app_end_date_str = data_section.get('application_end_date', '')
             auction_end_date_str = data_section.get('auction_end_date', '')
+            bankrupt_inn = data_section.get("bankrupt_inn", "")
             
             app_end_date = parse_date(app_end_date_str)
             auction_end_date = parse_date(auction_end_date_str)
 
-            # Application end date logic: KEEP if empty OR >= tomorrow
+            # Date conditions
             app_end_keep = app_end_date is None or app_end_date.date() >= tomorrow
-
-            # Auction end date logic: KEEP if empty OR > 14 days from now
             auction_end_keep = (
                 auction_end_date is None or auction_end_date.date() > future_14_days
             )
 
-            # Keep if BOTH conditions are true (both dates have enough time)
-            if app_end_keep and auction_end_keep:
+            # INN conditions
+            inn_empty = not bankrupt_inn or bankrupt_inn.strip() == ""
+            inn_valid = validate_inn(bankrupt_inn)
+            inn_keep = not inn_empty or not REMOVE_EMPTY_INN
+            inn_keep = inn_keep and (inn_valid or not REMOVE_INVALID_INN_LENGTH)
+
+            # Overall keep condition: all filters must pass
+            keep = app_end_keep and auction_end_keep and inn_keep
+
+            if keep:
                 filtered_items.append(item)
-                if app_end_date is None and auction_end_date is None:
-                    keep_reasons.append(
-                        f"BOTH empty: App={app_end_date_str} | Auction={auction_end_date_str}"
-                    )
-                elif app_end_date is None:
-                    keep_reasons.append(
-                        f"App empty, Auction late: {auction_end_date_str}"
-                    )
-                elif auction_end_date is None:
-                    keep_reasons.append(f"App late, Auction empty: {app_end_date_str}")
+                reason = []
+                if app_end_date is None:
+                    reason.append("App empty")
+                elif app_end_date.date() >= tomorrow:
+                    reason.append(f"App {app_end_date_str}")
+
+                if auction_end_date is None:
+                    reason.append("Auction empty")
+                elif auction_end_date.date() > future_14_days:
+                    reason.append(f"Auction {auction_end_date_str}")
+
+                if inn_empty:
+                    reason.append("INN empty (allowed)")
+                elif inn_valid:
+                    reason.append(f"INN {bankrupt_inn} (valid)")
                 else:
-                    keep_reasons.append(
-                        f"BOTH late: App={app_end_date_str} | Auction={auction_end_date_str}"
-                    )
+                    reason.append(f"INN {bankrupt_inn} (allowed)")
+
+                keep_reasons.append(" | ".join(reason))
             else:
-                # Remove if EITHER condition fails
                 removed_count += 1
+                reasons = []
+
                 if not app_end_keep:
-                    remove_reasons.append(f"App too soon: {app_end_date_str}")
+                    reasons.append(f"App too soon: {app_end_date_str}")
                 if not auction_end_keep:
-                    remove_reasons.append(f"Auction too soon: {auction_end_date_str}")
-                if not app_end_keep and not auction_end_keep:
-                    remove_reasons[-1] = (
-                        f"BOTH too soon: App={app_end_date_str} | Auction={auction_end_date_str}"
+                    reasons.append(f"Auction too soon: {auction_end_date_str}")
+                if inn_empty and REMOVE_EMPTY_INN:
+                    inn_empty_count += 1
+                    reasons.append("Empty INN")
+                if not inn_valid and REMOVE_INVALID_INN_LENGTH:
+                    inn_invalid_count += 1
+                    reasons.append(
+                        f"Invalid INN: {bankrupt_inn} ({len(''.join(filter(str.isdigit, bankrupt_inn)))} digits)"
                     )
+
+                remove_reasons.append("; ".join(reasons))
 
         # Update the data with filtered items
         data["items"] = filtered_items
@@ -90,22 +129,31 @@ def filter_lot_details():
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-        print("\nFiltering complete:")
+        print(f"\nFiltering complete:")
         print(f"Original items: {original_count}")
-        print(f"Removed: {removed_count} (not enough time)")
-        print(f"Remaining: {len(filtered_items)} (enough time)")
+        print(f"Removed: {removed_count}")
+        print(
+            f"  - Date filters: {original_count - removed_count - inn_empty_count - inn_invalid_count}"
+        )
+        print(f"  - Empty INN: {inn_empty_count}")
+        print(f"  - Invalid INN length: {inn_invalid_count}")
+        print(f"Remaining: {len(filtered_items)}")
         print(f"Output saved to: {output_file}")
 
-        # Test with your example
-        print("\nYour example test (App end: 19.11.2025, Auction end: 19.11.2025):")
-        app_test = parse_date("19.11.2025")
-        auction_test = parse_date("19.11.2025")
-        app_test_keep = app_test is None or app_test.date() >= tomorrow
-        auction_test_keep = auction_test is None or auction_test.date() > future_14_days
-        print(f"App end >= tomorrow: {app_test_keep} (19.11.2025 >= 2025-10-08)")
-        print(f"Auction end > 14 days: {auction_test_keep} (19.11.2025 > 2025-10-21)")
+        # Test with example
+        print(f"\nExample test:")
+        test_inn = "8602201830"  # 10 digits - valid
+        test_empty_inn = ""
+        test_invalid_inn = "12345678"  # 8 digits - invalid
+
         print(
-            f"Result: {'KEEP' if app_test_keep and auction_test_keep else 'REMOVE'} ✓"
+            f"Valid INN '{test_inn}': {'KEEP' if validate_inn(test_inn) else 'REMOVE'}"
+        )
+        print(
+            f"Empty INN '{test_empty_inn}': {'KEEP' if not REMOVE_EMPTY_INN else 'REMOVE'}"
+        )
+        print(
+            f"Invalid INN '{test_invalid_inn}': {'KEEP' if not REMOVE_INVALID_INN_LENGTH else 'REMOVE'}"
         )
         
         if keep_reasons:
