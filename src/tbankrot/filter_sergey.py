@@ -1,8 +1,12 @@
 # markers_core.py
 from __future__ import annotations
-from typing import Dict, Optional, Tuple, List
-from loguru import logger
+
+import json
+import re
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+from loguru import logger
 
 # ───────────────────────────── Logging ─────────────────────────────
 LOG_DIR = Path("logs")
@@ -121,21 +125,137 @@ def pct_change(prev: float, curr: float) -> Optional[float]:
     except Exception:
         return None
 
+
+def analyze_lots_finances_batch(
+    input_path: str = "debug/lot_details_with_finances.json", output_path: str = None
+) -> None:
+    """
+    Load the batch JSON, analyze finances_data for each lot using markers,
+    add results under "markers_analysis" key, and save to a new output file.
+
+    Args:
+        input_path: Path to input JSON file
+        output_path: Path to output JSON file (defaults to input_path with '_analyzed' suffix)
+    """
+    path = Path(input_path)
+    if not path.exists():
+        logger.warning(f"Input file {input_path} does not exist. Skipping.")
+        return
+
+    # Determine output path
+    if output_path is None:
+        output_path = path.with_stem(path.stem + "_analyzed")
+    output = Path(output_path)
+
+    # Load JSON
+    with open(path, "r", encoding="utf-8") as f:
+        batch_data = json.load(f)
+
+    items = batch_data.get("items", [])
+    updated_count = 0
+
+    for item in items:
+        data = item.get("data", {})
+        finances_data = data.get("finances_data", {})
+
+        # Check if already analyzed
+        if "markers_analysis" in data:
+            logger.info(f"Skipping already analyzed item: {item.get('url', 'unknown')}")
+            continue
+
+        # Extract raw financials (handle error cases)
+        raw_financials = finances_data.get("financials", {})
+        if isinstance(raw_financials, dict) and "error" in raw_financials:
+            data["markers_analysis"] = {
+                "error": f"Financials fetch error: {raw_financials['error']}",
+                "markers": {},
+                "totals": {"sum": 0},
+                "autopass": {"pass": False, "reason": None},
+            }
+            updated_count += 1
+            continue
+
+        # DIAGNOSTIC LOGS: Add these to inspect per-item data
+        url = item.get("url", "unknown")
+        inn = data.get("bankrupt_inn", "unknown")
+        logger.info(f"[DIAG] Processing lot: URL={url}, INN={inn}")
+        if raw_financials:
+            sample_keys = list(raw_financials.keys())[:3]  # First 3 keys
+            sample_vals = {
+                k: list(raw_financials[k].get("values", {}).items())[:2]
+                for k in sample_keys
+            }  # Sample values per key
+            logger.info(
+                f"[DIAG] Raw financials sample for {inn}: keys={sample_keys}, sample_values={sample_vals}"
+            )
+        else:
+            logger.info(f"[DIAG] Empty raw_financials for {inn}")
+
+        # Run markers (financials only; coefficients not used in current markers)
+        try:
+            analysis = calculate_all_markers_from_json(raw_financials)
+            # DIAGNOSTIC: Log normalized sample and total score
+            normalized = normalize_rsbu_json(raw_financials)
+            sample_norm = {
+                k: dict(list(v.items())[:2]) for k, v in list(normalized.items())[:3]
+            }  # Sample normalized
+            logger.info(
+                f"[DIAG] Normalized sample for {inn}: {sample_norm}, total_points={analysis['totals']['sum']}"
+            )
+            data["markers_analysis"] = analysis
+            logger.info(
+                f"Analyzed item {url}: total points {analysis['totals']['sum']}"
+            )
+            updated_count += 1
+        except Exception as e:
+            logger.error(f"Error analyzing item {url}: {e}")
+            data["markers_analysis"] = {
+                "error": str(e),
+                "markers": {},
+                "totals": {"sum": 0},
+                "autopass": {"pass": False, "reason": None},
+            }
+            updated_count += 1
+
+    # Save to output file
+    with open(output, "w", encoding="utf-8") as f:
+        json.dump(batch_data, f, ensure_ascii=False, indent=2)
+
+    logger.info(
+        f"Batch analysis complete. Updated {updated_count}/{len(items)} items. Output saved to {output_path}"
+    )
+
+
 # ───────────────────────── Normalizer ─────────────────────────
+
+
+_KEY_RE = re.compile(r"[ФF]\s*\d+[.\s](\d+)", re.IGNORECASE)
+
+
 def normalize_rsbu_json(raw_data: dict) -> dict[str, dict[int, float | None]]:
     """
-    Converts RСБУ-style JSON like:
+    Converts:
       {"Ф1.1200": {"name": "...", "values": {"2021": "35545", "2022": ""}}, ...}
     → into:
       {"f1200": {2021: 35545.0, 2022: None}, ...}
-    Keeps only keys starting with "Ф" and flattens to "f" + digits.
+
+    NOTE: We intentionally drop the form prefix (1/2). "Ф1.1150" -> f1150; "Ф2.2110" -> f2110.
     """
     out: dict[str, dict[int, float | None]] = {}
 
     for key, block in raw_data.items():
-        if not isinstance(key, str) or not key.startswith("Ф"):
+        if not isinstance(key, str):
             continue
-        cleaned_key = "f" + "".join(ch for ch in key if ch.isdigit())
+
+        m = _KEY_RE.search(key)
+        if not m:
+            # If someone already passed "f1200" etc., accept as-is
+            if key.startswith("f") and key[1:].isdigit():
+                cleaned_key = key
+            else:
+                continue
+        else:
+            cleaned_key = f"f{m.group(1)}"
 
         values = (block or {}).get("values", {})
         out_vals: dict[int, float | None] = {}
@@ -170,7 +290,9 @@ def marker_1_negative_equity(f1300: YearsDict) -> int:
     pair = _pick_latest_consecutive_pair([f1300])
     if pair:
         prev_y, curr_y, [prev_val], [curr_val] = pair
-        logger.info(f"[M1] Using pair {prev_y}->{curr_y}: prev={prev_val}, curr={curr_val}")
+        logger.info(
+            f"[M1] Using pair {prev_y}->{curr_y}: prev={prev_val}, curr={curr_val}"
+        )
         if curr_val < 0 and prev_val < 0:
             return 3
         if curr_val < 0:
@@ -215,7 +337,9 @@ def marker_2_low_current_liquidity(f1200: YearsDict, f1500: YearsDict) -> int:
     return 0
 
 
-def marker_3_low_quick_liquidity(f1200: YearsDict, f1210: YearsDict, f1500: YearsDict) -> int:
+def marker_3_low_quick_liquidity(
+    f1200: YearsDict, f1210: YearsDict, f1500: YearsDict
+) -> int:
     """
     Маркер 3. Низкая быстрая ликвидность
     - Расчёт: (1200 - 1210) / 1500
@@ -231,13 +355,16 @@ def marker_3_low_quick_liquidity(f1200: YearsDict, f1210: YearsDict, f1500: Year
     yr, [a1200, a1210, a1500] = sel
     quick_assets = a1200 - a1210
     ratio = safe_div(quick_assets, a1500)
-    logger.info(f"[M3] Year {yr}: (1200-1210)={quick_assets}, 1500={a1500}, ratio={ratio}")
+    logger.info(
+        f"[M3] Year {yr}: (1200-1210)={quick_assets}, 1500={a1500}, ratio={ratio}"
+    )
 
     if ratio is None:
         return 0
     if ratio < 0.6:
         return 2
     return 0
+
 
 def marker_4_low_absolute_liquidity(f1250: YearsDict, f1500: YearsDict) -> int:
     """
@@ -273,7 +400,9 @@ def marker_5_ppe_drop_25(f1150: YearsDict) -> int:
 
     prev_y, curr_y, [prev_v], [curr_v] = pair
     ch = pct_change(prev_v, curr_v)  # (curr - prev)/abs(prev)
-    logger.info(f"[M5] {prev_y}->{curr_y}: 1150 prev={prev_v}, curr={curr_v}, pct_change={ch}")
+    logger.info(
+        f"[M5] {prev_y}->{curr_y}: 1150 prev={prev_v}, curr={curr_v}, pct_change={ch}"
+    )
 
     if ch is None:
         return 0
@@ -296,7 +425,9 @@ def marker_6_lt_investments_shift(f1170: YearsDict, f1600: YearsDict) -> int:
     prev_y, curr_y, [p1170, p1600], [c1170, c1600] = pair
     share_prev = safe_div(p1170, p1600)
     share_curr = safe_div(c1170, c1600)
-    logger.info(f"[M6] {prev_y}->{curr_y}: share_prev={share_prev}, share_curr={share_curr}")
+    logger.info(
+        f"[M6] {prev_y}->{curr_y}: share_prev={share_prev}, share_curr={share_curr}"
+    )
 
     if share_prev is None or share_curr is None:
         return 0
@@ -325,7 +456,11 @@ def marker_7_frozen_receivables(f1230: YearsDict, f2110: YearsDict) -> int:
     years = [2022, 2023, 2024]
     r = {}
     for y in years:
-        r[y] = safe_div(nf1230.get(y), nf2110.get(y)) if (y in nf1230 and y in nf2110) else None
+        r[y] = (
+            safe_div(nf1230.get(y), nf2110.get(y))
+            if (y in nf1230 and y in nf2110)
+            else None
+        )
 
     if all(rv is not None for rv in (r[2022], r[2023], r[2024])):
         r22, r23, r24 = r[2022], r[2023], r[2024]
@@ -366,7 +501,7 @@ def marker_8_ap_up_rev_down(f1520: YearsDict, f2110: YearsDict) -> int:
     - Условия на одной и той же паре лет:
         * 1520 выросла ≥ 50% (pct_change ≥ +0.5)
         * 2110 упала ≥ 30% (pct_change ≤ -0.3)
-    - Пара: (2023→2024), иначе (2022→2023). Отсутствие пары/prev==0 → 0.
+    - Пара: (2023→2024), иначе (2022→2023).
     """
     pair = _pick_latest_consecutive_pair([f1520, f2110])
     if not pair:
@@ -406,7 +541,11 @@ def marker_9_cash_vs_ap(f1250: YearsDict, f1520: YearsDict) -> int:
 
 
 def marker_10_debt_load_and_interest_cover(
-    f1410: YearsDict, f1510: YearsDict, f2110: YearsDict, f2200: YearsDict, f2330: YearsDict
+    f1410: YearsDict,
+    f1510: YearsDict,
+    f2110: YearsDict,
+    f2200: YearsDict,
+    f2330: YearsDict,
 ) -> int:
     """
     Маркер 10. Чрезмерная долговая нагрузка и слабое покрытие процентов
@@ -420,7 +559,9 @@ def marker_10_debt_load_and_interest_cover(
     if selA:
         yrA, [a1410, a1510, a2110] = selA
         leverage = safe_div(a1410 + a1510, a2110)
-        logger.info(f"[M10.A] Year {yrA}: (1410+1510)={a1410 + a1510}, 2110={a2110}, leverage={leverage}")
+        logger.info(
+            f"[M10.A] Year {yrA}: (1410+1510)={a1410 + a1510}, 2110={a2110}, leverage={leverage}"
+        )
         if leverage is not None and leverage > 2:
             return 2
 
@@ -436,6 +577,7 @@ def marker_10_debt_load_and_interest_cover(
 
     logger.info("[M10] No criteria met -> 0 points")
     return 0
+
 
 def marker_11_inventories_up_revenue_down(f1210: YearsDict, f2110: YearsDict) -> int:
     """
@@ -455,7 +597,9 @@ def marker_11_inventories_up_revenue_down(f1210: YearsDict, f2110: YearsDict) ->
     ch_inv = pct_change(p1210, c1210)
     ch_rev = pct_change(p2110, c2110)
     share_curr = safe_div(c1210, c2110)
-    logger.info(f"[M11] {prev_y}->{curr_y}: Δ1210={ch_inv}, Δ2110={ch_rev}, share_curr={share_curr}")
+    logger.info(
+        f"[M11] {prev_y}->{curr_y}: Δ1210={ch_inv}, Δ2110={ch_rev}, share_curr={share_curr}"
+    )
 
     if ch_inv is None or ch_rev is None:
         return 0
@@ -465,7 +609,9 @@ def marker_11_inventories_up_revenue_down(f1210: YearsDict, f2110: YearsDict) ->
     return 0
 
 
-def marker_12_large_asset_shifts(f1150: YearsDict, f1170: YearsDict, f1240: YearsDict, f1600: YearsDict) -> int:
+def marker_12_large_asset_shifts(
+    f1150: YearsDict, f1170: YearsDict, f1240: YearsDict, f1600: YearsDict
+) -> int:
     """
     Маркер 12. Крупные сдвиги в структуре активов
     - Сработал, если изменение любого из {1150, 1170, 1240} за год
@@ -489,61 +635,93 @@ def marker_12_large_asset_shifts(f1150: YearsDict, f1170: YearsDict, f1240: Year
     diff_1170 = abs(c1170 - p1170)
     diff_1240 = abs(c1240 - p1240)
 
-    logger.info(f"[M12] {prev_y}->{curr_y}: |Δ1150|={diff_1150}, |Δ1170|={diff_1170}, |Δ1240|={diff_1240}, thr={threshold}")
+    logger.info(
+        f"[M12] {prev_y}->{curr_y}: |Δ1150|={diff_1150}, |Δ1170|={diff_1170}, |Δ1240|={diff_1240}, thr={threshold}"
+    )
 
     if diff_1150 >= threshold or diff_1170 >= threshold or diff_1240 >= threshold:
         return 2
     return 0
 
 
-def marker_13_reporting_problems(f1600: YearsDict, f1700: YearsDict, f2110: YearsDict, f1200: YearsDict, f1500: YearsDict) -> int:
+def marker_13_reporting_problems(
+    f1600: YearsDict,
+    f1700: YearsDict,
+    f2110: YearsDict,
+    f1200: YearsDict,
+    f1500: YearsDict,
+) -> int:
     """
-    Маркер 13. Проблемы с отчётностью — 3 балла при любом из условий:
-      1) Нет отчётности за последний год:
-         - трактуем как отсутствие ВСЕХ переданных показателей за самый новый из PREF_YEARS_ORDER.
-      2) 1600 != 1700 в последнем доступном году, где обе строки присутствуют.
-      3) Два года подряд отсутствуют ключевые строки (2110, 1200, 1500):
-         - трактуем как: в каждом из двух последовательных лет отсутствует ХОТЯ БЫ одна из трёх строк.
+    3 points if:
+      (1) No reporting in the latest year (none of the *available* key lines exist there), or
+      (2) 1600 != 1700 in the latest year where both exist, or
+      (3) Two consecutive years miss at least one *required* key line.
+          Here 2110 (revenue) is required only if revenue is present in the dataset at least once.
     """
-    # 1) Нет отчётности за последний год
-    # latest year per PREF_YEARS_ORDER with any expectation
-    for yr in PREF_YEARS_ORDER:
-        any_known = any(yr in _normalize_years_dict(d) for d in [f1600, f1700, f2110, f1200, f1500])
-        if any_known:
-            # if for this latest year ALL provided are missing -> trigger
-            n1600 = _normalize_years_dict(f1600).get(yr)
-            n1700 = _normalize_years_dict(f1700).get(yr)
-            n2110 = _normalize_years_dict(f2110).get(yr)
-            n1200 = _normalize_years_dict(f1200).get(yr)
-            n1500 = _normalize_years_dict(f1500).get(yr)
-            if all(v is None for v in [n1600, n1700, n2110, n1200, n1500]):
-                logger.info(f"[M13] Missing all provided lines in latest year {yr} -> 3 points")
-                return 3
-            break  # found the latest year to consider
+    nf1600 = _normalize_years_dict(f1600)
+    nf1700 = _normalize_years_dict(f1700)
+    nf2110 = _normalize_years_dict(f2110)
+    nf1200 = _normalize_years_dict(f1200)
+    nf1500 = _normalize_years_dict(f1500)
 
-    # 2) Несоответствие 1600 и 1700 в любом последнем году, где обе есть
+    has_any_revenue = any(v is not None for v in nf2110.values())
+
+    def line_has_any(d: dict[int, Optional[float]]) -> bool:
+        return any(v is not None for v in d.values())
+
+    # (1) No reporting in the latest year that we expect *something* for
     for yr in PREF_YEARS_ORDER:
-        n1600 = _normalize_years_dict(f1600).get(yr)
-        n1700 = _normalize_years_dict(f1700).get(yr)
-        if n1600 is not None and n1700 is not None:
-            if n1600 != n1700:
-                logger.info(f"[M13] 1600 != 1700 in {yr}: {n1600} != {n1700} -> 3 points")
+        # Only include lines that exist somewhere in the history
+        candidates = []
+        if line_has_any(nf1600):
+            candidates.append(nf1600.get(yr))
+        if line_has_any(nf1700):
+            candidates.append(nf1700.get(yr))
+        if has_any_revenue and line_has_any(nf2110):
+            candidates.append(nf2110.get(yr))
+        if line_has_any(nf1200):
+            candidates.append(nf1200.get(yr))
+        if line_has_any(nf1500):
+            candidates.append(nf1500.get(yr))
+
+        if candidates:  # we expect something in this year
+            if all(v is None for v in candidates):
+                logger.info(
+                    f"[M13] Missing all available key lines in latest year {yr} -> 3 points"
+                )
+                return 3
+            break  # stop at the latest year we consider
+
+    # (2) 1600 != 1700 in the latest year where both exist
+    for yr in PREF_YEARS_ORDER:
+        a = nf1600.get(yr)
+        b = nf1700.get(yr)
+        if a is not None and b is not None:
+            if a != b:
+                logger.info(f"[M13] 1600 != 1700 in {yr}: {a} != {b} -> 3 points")
                 return 3
             break
 
-    # 3) Два года подряд отсутствуют ключевые строки (2110,1200,1500)
+    # (3) Two consecutive years with at least one required key missing.
+    # Required = {1200, 1500} (+2110 if we actually have revenue in this dataset).
     def year_has_missing_keys(y: int) -> bool:
-        n2110 = _normalize_years_dict(f2110).get(y)
-        n1200 = _normalize_years_dict(f1200).get(y)
-        n1500 = _normalize_years_dict(f1500).get(y)
-        return any(v is None for v in [n2110, n1200, n1500])
+        required = [nf1200.get(y), nf1500.get(y)]
+        if has_any_revenue:
+            required.append(nf2110.get(y))
+        # if nothing is required (shouldn't happen), say not missing
+        if not required:
+            return False
+        return any(v is None for v in required)
 
-    # Check (2022,2023) and (2023,2024)
-    if year_has_missing_keys(2022) and year_has_missing_keys(2023):
-        logger.info("[M13] Missing key lines in both 2022 and 2023 -> 3 points")
-        return 3
     if year_has_missing_keys(2023) and year_has_missing_keys(2024):
-        logger.info("[M13] Missing key lines in both 2023 and 2024 -> 3 points")
+        logger.info(
+            "[M13] Missing required key lines in both 2023 and 2024 -> 3 points"
+        )
+        return 3
+    if year_has_missing_keys(2022) and year_has_missing_keys(2023):
+        logger.info(
+            "[M13] Missing required key lines in both 2022 and 2023 -> 3 points"
+        )
         return 3
 
     logger.info("[M13] No reporting problems detected -> 0 points")
@@ -551,9 +729,15 @@ def marker_13_reporting_problems(f1600: YearsDict, f1700: YearsDict, f2110: Year
 
 
 def marker_14_bankruptcy_obligation_composite(
-    f1300: YearsDict, f1200: YearsDict, f1500: YearsDict,
-    f1210: YearsDict, f1410: YearsDict, f1510: YearsDict, f2110: YearsDict,
-    f1250: YearsDict, f1520: YearsDict
+    f1300: YearsDict,
+    f1200: YearsDict,
+    f1500: YearsDict,
+    f1210: YearsDict,
+    f1410: YearsDict,
+    f1510: YearsDict,
+    f2110: YearsDict,
+    f1250: YearsDict,
+    f1520: YearsDict,
 ) -> int:
     """
     Маркер 14. Сводный признак обязанности подать заявление о банкротстве — 3 балла при ЛЮБОМ из сценариев:
@@ -600,8 +784,15 @@ def marker_14_bankruptcy_obligation_composite(
                 prev_y, curr_y, [p1520, p2110], [c1520, c2110] = pair
                 ch_ap = pct_change(p1520, c1520)
                 ch_rev = pct_change(p2110, c2110)
-                logger.info(f"[M14.C] M8 check {prev_y}->{curr_y}: Δ1520={ch_ap}, Δ2110={ch_rev}")
-                if ch_ap is not None and ch_rev is not None and ch_ap >= 0.5 and ch_rev <= -0.3:
+                logger.info(
+                    f"[M14.C] M8 check {prev_y}->{curr_y}: Δ1520={ch_ap}, Δ2110={ch_rev}"
+                )
+                if (
+                    ch_ap is not None
+                    and ch_rev is not None
+                    and ch_ap >= 0.5
+                    and ch_rev <= -0.3
+                ):
                     return 3
 
     logger.info("[M14] Composite not triggered -> 0 points")
@@ -629,18 +820,26 @@ def marker_15_ppe_share_drop_with_flat_or_falling_revenue(
 
     # Helper to compute share
     def share(y: int) -> Optional[float]:
-        return safe_div(nf1150.get(y), nf1600.get(y)) if (y in nf1150 and y in nf1600) else None
+        return (
+            safe_div(nf1150.get(y), nf1600.get(y))
+            if (y in nf1150 and y in nf1600)
+            else None
+        )
 
     # 3-year preferred route
     s22, s23, s24 = share(2022), share(2023), share(2024)
     r22, r23, r24 = nf2110.get(2022), nf2110.get(2023), nf2110.get(2024)
 
-    if all(v is not None for v in (s23, s24)) and all(v is not None for v in (r23, r24)):
+    if all(v is not None for v in (s23, s24)) and all(
+        v is not None for v in (r23, r24)
+    ):
         drop_pp = s24 - s23  # negative if drop
         # If all three rev years exist, enforce two-year non-increase; else fallback to pair-only logic later
         if all(v is not None for v in (s22, r22)):
             if r23 <= r22 and r24 <= r23 and drop_pp <= -0.15:
-                logger.info(f"[M15] 3y OK: shares 23->{s23}, 24->{s24}, drop={drop_pp}; rev 22->{r22},23->{r23},24->{r24}")
+                logger.info(
+                    f"[M15] 3y OK: shares 23->{s23}, 24->{s24}, drop={drop_pp}; rev 22->{r22},23->{r23},24->{r24}"
+                )
                 return 2
 
     # Fallback to last pair with valid shares and revenues
@@ -652,13 +851,21 @@ def marker_15_ppe_share_drop_with_flat_or_falling_revenue(
     prev_y, curr_y, [p1150, p1600, p2110], [c1150, c1600, c2110] = pair
     sh_prev = safe_div(p1150, p1600)
     sh_curr = safe_div(c1150, c1600)
-    logger.info(f"[M15] {prev_y}->{curr_y}: share_prev={sh_prev}, share_curr={sh_curr}, rev_prev={p2110}, rev_curr={c2110}")
+    logger.info(
+        f"[M15] {prev_y}->{curr_y}: share_prev={sh_prev}, share_curr={sh_curr}, rev_prev={p2110}, rev_curr={c2110}"
+    )
 
     if sh_prev is None or sh_curr is None:
         return 0
-    if (sh_curr - sh_prev) <= -0.15 and c2110 is not None and p2110 is not None and c2110 <= p2110:
+    if (
+        (sh_curr - sh_prev) <= -0.15
+        and c2110 is not None
+        and p2110 is not None
+        and c2110 <= p2110
+    ):
         return 2
     return 0
+
 
 def marker_16_st_investments_growth(f1240: YearsDict, f1600: YearsDict) -> int:
     """
@@ -678,7 +885,9 @@ def marker_16_st_investments_growth(f1240: YearsDict, f1600: YearsDict) -> int:
     share_prev = safe_div(p1240, p1600)
     share_curr = safe_div(c1240, c1600)
 
-    logger.info(f"[M16] {prev_y}->{curr_y}: Δ1240={ch_1240}, share_prev={share_prev}, share_curr={share_curr}")
+    logger.info(
+        f"[M16] {prev_y}->{curr_y}: Δ1240={ch_1240}, share_prev={share_prev}, share_curr={share_curr}"
+    )
 
     # A) raw growth
     if ch_1240 is not None and ch_1240 >= 0.50:
@@ -718,7 +927,11 @@ def marker_17_ca_not_up_ap_up(f1200: YearsDict, f1520: YearsDict) -> int:
 
 
 def marker_18_structural_anomalies(
-    f1200: YearsDict, f1210: YearsDict, f1500: YearsDict, f1520: YearsDict, f2110: YearsDict
+    f1200: YearsDict,
+    f1210: YearsDict,
+    f1500: YearsDict,
+    f1520: YearsDict,
+    f2110: YearsDict,
 ) -> int:
     """
     Маркер 18. Структурные несоответствия — 1 балл при ЛЮБОМ из условий:
@@ -755,10 +968,17 @@ def marker_18_structural_anomalies(
         ca_curr = nf1200.get(curr_y)
 
         # revenue absent means None (not zero). CA considered present if value is not None and > 0
-        if r_prev is None and r_curr is None and (
-            (ca_prev is not None and ca_prev > 0) or (ca_curr is not None and ca_curr > 0)
+        if (
+            r_prev is None
+            and r_curr is None
+            and (
+                (ca_prev is not None and ca_prev > 0)
+                or (ca_curr is not None and ca_curr > 0)
+            )
         ):
-            logger.info(f"[M18.C] No revenue in {prev_y} & {curr_y} with CA present -> 1 point")
+            logger.info(
+                f"[M18.C] No revenue in {prev_y} & {curr_y} with CA present -> 1 point"
+            )
             return 1
 
     logger.info("[M18] No structural anomaly -> 0 points")
@@ -766,14 +986,14 @@ def marker_18_structural_anomalies(
 
 
 def marker_19_off_balance_indicators(
-    property_tax: YearsDict,          # налог на имущество
-    transport_tax: YearsDict,         # транспортный налог
-    egrul_active: YearsDict,          # 1/0: активность по ЕГРЮЛ (1=активна, 0=не подтверждается)
-    rosstat_active: YearsDict,        # 1/0: активность по Росстату (1=активна, 0=нет)
-    f1230: YearsDict,                 # дебиторская задолженность
-    f1170: YearsDict,                 # ДФВ
-    f1240: YearsDict,                 # КФВ
-    f1600: YearsDict,                 # валюта баланса
+    property_tax: YearsDict,  # налог на имущество
+    transport_tax: YearsDict,  # транспортный налог
+    egrul_active: YearsDict,  # 1/0: активность по ЕГРЮЛ (1=активна, 0=не подтверждается)
+    rosstat_active: YearsDict,  # 1/0: активность по Росстату (1=активна, 0=нет)
+    f1230: YearsDict,  # дебиторская задолженность
+    f1170: YearsDict,  # ДФВ
+    f1240: YearsDict,  # КФВ
+    f1600: YearsDict,  # валюта баланса
 ) -> int:
     """
     Маркер 19. Внебалансовые индикаторы из смежных реестров — 2 балла
@@ -788,12 +1008,19 @@ def marker_19_off_balance_indicators(
     При отсутствии необходимых данных/деноминатора → 0 баллов.
     """
     # Pair for taxes + registers + balance totals
-    pair = _pick_latest_consecutive_pair([property_tax, transport_tax, egrul_active, rosstat_active, f1600])
+    pair = _pick_latest_consecutive_pair(
+        [property_tax, transport_tax, egrul_active, rosstat_active, f1600]
+    )
     if not pair:
         logger.info("[M19] No valid pair for taxes/registers/1600 -> 0 points")
         return 0
 
-    prev_y, curr_y, [p_prop, p_trans, p_egrul, p_rosstat, p1600], [c_prop, c_trans, c_egrul, c_rosstat, c1600] = pair
+    (
+        prev_y,
+        curr_y,
+        [p_prop, p_trans, p_egrul, p_rosstat, p1600],
+        [c_prop, c_trans, c_egrul, c_rosstat, c1600],
+    ) = pair
 
     # (1) tax collapse
     def collapsed(prev_v: Optional[float], curr_v: Optional[float]) -> bool:
@@ -805,13 +1032,23 @@ def marker_19_off_balance_indicators(
 
     # (2) registers inactive at current year (treat non-zero as active)
     reg_inactive = False
-    if c_egrul is not None and _coerce_number(c_egrul) is not None and float(c_egrul) == 0:
+    if (
+        c_egrul is not None
+        and _coerce_number(c_egrul) is not None
+        and float(c_egrul) == 0
+    ):
         reg_inactive = True
-    if c_rosstat is not None and _coerce_number(c_rosstat) is not None and float(c_rosstat) == 0:
+    if (
+        c_rosstat is not None
+        and _coerce_number(c_rosstat) is not None
+        and float(c_rosstat) == 0
+    ):
         reg_inactive = True
 
     # (3) large receivables/investments vs balance in current year
-    sel_bal = _pick_latest_year_with_all([f1600])  # ensure we can fetch 1600 for the current selected year
+    sel_bal = _pick_latest_year_with_all(
+        [f1600]
+    )  # ensure we can fetch 1600 for the current selected year
     # But we need the SAME 'curr_y' year; pull directly from normalized dicts:
     nf1600 = _normalize_years_dict(f1600)
     nf1230 = _normalize_years_dict(f1230)
@@ -824,8 +1061,16 @@ def marker_19_off_balance_indicators(
     st_inv = nf1240.get(curr_y)
 
     share_rec = safe_div(rec, bal) if (rec is not None and bal is not None) else None
-    share_inv = safe_div((0 if lt_inv is None else lt_inv) + (0 if st_inv is None else st_inv), bal) if bal is not None else None
-    large_assets = (share_rec is not None and share_rec >= 0.20) or (share_inv is not None and share_inv >= 0.20)
+    share_inv = (
+        safe_div(
+            (0 if lt_inv is None else lt_inv) + (0 if st_inv is None else st_inv), bal
+        )
+        if bal is not None
+        else None
+    )
+    large_assets = (share_rec is not None and share_rec >= 0.20) or (
+        share_inv is not None and share_inv >= 0.20
+    )
 
     logger.info(
         f"[M19] {prev_y}->{curr_y}: tax_ok={tax_ok}, reg_inactive={reg_inactive}, "
@@ -876,44 +1121,57 @@ def calculate_all_markers_from_json(raw_data: dict) -> dict:
             out[y_int] = _coerce_number(v)
         return out
 
-    property_tax   = _norm_aux("property_tax")
-    transport_tax  = _norm_aux("transport_tax")
-    egrul_active   = _norm_aux("egrul_active")
+    property_tax = _norm_aux("property_tax")
+    transport_tax = _norm_aux("transport_tax")
+    egrul_active = _norm_aux("egrul_active")
     rosstat_active = _norm_aux("rosstat_active")
 
     # ── Compute all markers ──
     m = {}
-    m["1"]  = marker_1_negative_equity(g("f1300"))
-    m["2"]  = marker_2_low_current_liquidity(g("f1200"), g("f1500"))
-    m["3"]  = marker_3_low_quick_liquidity(g("f1200"), g("f1210"), g("f1500"))
-    m["4"]  = marker_4_low_absolute_liquidity(g("f1250"), g("f1500"))
-    m["5"]  = marker_5_ppe_drop_25(g("f1150"))
-    m["6"]  = marker_6_lt_investments_shift(g("f1170"), g("f1600"))
-    m["7"]  = marker_7_frozen_receivables(g("f1230"), g("f2110"))
-    m["8"]  = marker_8_ap_up_rev_down(g("f1520"), g("f2110"))
-    m["9"]  = marker_9_cash_vs_ap(g("f1250"), g("f1520"))
-    m["10"] = marker_10_debt_load_and_interest_cover(g("f1410"), g("f1510"), g("f2110"), g("f2200"), g("f2330"))
-    m["11"] = marker_11_inventories_up_revenue_down(g("f1210"), g("f2110"))
-    m["12"] = marker_12_large_asset_shifts(g("f1150"), g("f1170"), g("f1240"), g("f1600"))
-    m["13"] = marker_13_reporting_problems(g("f1600"), g("f1700"), g("f2110"), g("f1200"), g("f1500"))
-    m["14"] = marker_14_bankruptcy_obligation_composite(
-        g("f1300"), g("f1200"), g("f1500"), g("f1210"),
-        g("f1410"), g("f1510"), g("f2110"), g("f1250"), g("f1520")
+    m["1"] = marker_1_negative_equity(g("f1300"))
+    m["2"] = marker_2_low_current_liquidity(g("f1200"), g("f1500"))
+    m["3"] = marker_3_low_quick_liquidity(g("f1200"), g("f1210"), g("f1500"))
+    m["4"] = marker_4_low_absolute_liquidity(g("f1250"), g("f1500"))
+    m["5"] = marker_5_ppe_drop_25(g("f1150"))
+    m["6"] = marker_6_lt_investments_shift(g("f1170"), g("f1600"))
+    m["7"] = marker_7_frozen_receivables(g("f1230"), g("f2110"))
+    m["8"] = marker_8_ap_up_rev_down(g("f1520"), g("f2110"))
+    m["9"] = marker_9_cash_vs_ap(g("f1250"), g("f1520"))
+    m["10"] = marker_10_debt_load_and_interest_cover(
+        g("f1410"), g("f1510"), g("f2110"), g("f2200"), g("f2330")
     )
-    m["15"] = marker_15_ppe_share_drop_with_flat_or_falling_revenue(g("f1150"), g("f1600"), g("f2110"))
+    m["11"] = marker_11_inventories_up_revenue_down(g("f1210"), g("f2110"))
+    m["12"] = marker_12_large_asset_shifts(
+        g("f1150"), g("f1170"), g("f1240"), g("f1600")
+    )
+    m["13"] = marker_13_reporting_problems(
+        g("f1600"), g("f1700"), g("f2110"), g("f1200"), g("f1500")
+    )
+    m["14"] = marker_14_bankruptcy_obligation_composite(
+        g("f1300"),
+        g("f1200"),
+        g("f1500"),
+        g("f1210"),
+        g("f1410"),
+        g("f1510"),
+        g("f2110"),
+        g("f1250"),
+        g("f1520"),
+    )
+    m["15"] = marker_15_ppe_share_drop_with_flat_or_falling_revenue(
+        g("f1150"), g("f1600"), g("f2110")
+    )
     m["16"] = marker_16_st_investments_growth(g("f1240"), g("f1600"))
     m["17"] = marker_17_ca_not_up_ap_up(g("f1200"), g("f1520"))
-    m["18"] = marker_18_structural_anomalies(g("f1200"), g("f1210"), g("f1500"), g("f1520"), g("f2110"))
-    # m["19"] = marker_19_off_balance_indicators(
-    #     property_tax, transport_tax, egrul_active, rosstat_active,
-    #     g("f1230"), g("f1170"), g("f1240"), g("f1600")
-    # )
+    m["18"] = marker_18_structural_anomalies(
+        g("f1200"), g("f1210"), g("f1500"), g("f1520"), g("f2110")
+    )
 
     # ── Scoring & autopass rules ──
     total = sum(m.values())
     strong = sum(1 for v in m.values() if v == 3)
     medium = sum(1 for v in m.values() if v == 2)
-    weak   = sum(1 for v in m.values() if v == 1)
+    weak = sum(1 for v in m.values() if v == 1)
 
     # Autopass:
     # • any pair of strong (3+3)
@@ -928,7 +1186,9 @@ def calculate_all_markers_from_json(raw_data: dict) -> dict:
         autopass = {"pass": True, "reason": "total_ge_10"}
 
     # Log a compact summary
-    logger.info(f"[AGG] totals: sum={total}, strong={strong}, medium={medium}, weak={weak}, autopass={autopass}")
+    logger.info(
+        f"[AGG] totals: sum={total}, strong={strong}, medium={medium}, weak={weak}, autopass={autopass}"
+    )
 
     return {
         "markers": m,
@@ -937,30 +1197,37 @@ def calculate_all_markers_from_json(raw_data: dict) -> dict:
     }
 
 
-
 # ───────────────────────────── Example usage (optional) ─────────────────────────────
-if __name__ == "__main__":
-    logger.info("=== Running full marker diagnostics demo ===")
 
+def _demo() -> None:
+    """
+    Dummy financial data (years 2022–2024)
+    Values are intentionally varied to trigger some markers
+    """
     # Dummy financial data (years 2022–2024)
     # Values are intentionally varied to trigger some markers
     f = {
-        "f1300": {2022: 5000, 2023: -2000, 2024: -1000},          # capital/reserves
-        "f1200": {2022: 800, 2023: 700, 2024: 600},               # current assets
-        "f1210": {2022: 300, 2023: 350, 2024: 400},               # inventories
-        "f1250": {2022: 200, 2023: 100, 2024: 80},                # cash
-        "f1150": {2022: 2000, 2023: 1800, 2024: 1200},            # PPE
-        "f1170": {2022: 100, 2023: 200, 2024: 600},               # LT investments
-        "f1240": {2022: 50, 2023: 60, 2024: 300},                 # ST investments
-        "f1410": {2022: 500, 2023: 600, 2024: 900},               # LT loans
-        "f1500": {2022: 900, 2023: 1000, 2024: 1100},             # current liabilities
-        "f1510": {2022: 200, 2023: 250, 2024: 400},               # ST loans
-        "f1520": {2022: 400, 2023: 500, 2024: 800},               # accounts payable
-        "f1600": {2022: 3000, 2023: 3200, 2024: 3100},            # balance total
-        "f1700": {2022: 3000, 2023: 3200, 2024: 3150},            # balance liabilities total
-        "f2110": {2022: 2000, 2023: 1500, 2024: 1000},            # revenue
-        "f2200": {2022: 300, 2023: 250, 2024: 200},               # operating profit
-        "f2330": {2022: 150, 2023: 200, 2024: 250},               # interest expenses
+        "f1300": {2022: 5000, 2023: -2000, 2024: -1000},  # capital/reserves
+        "f1200": {2022: 800, 2023: 700, 2024: 600},  # current assets
+        "f1210": {2022: 300, 2023: 350, 2024: 400},  # inventories
+        "f1250": {2022: 200, 2023: 100, 2024: 80},  # cash
+        "f1150": {2022: 2000, 2023: 1800, 2024: 1200},  # PPE
+        "f1170": {2022: 100, 2023: 200, 2024: 600},  # LT investments
+        "f1240": {2022: 50, 2023: 60, 2024: 300},  # ST investments
+        "f1410": {2022: 500, 2023: 600, 2024: 900},  # LT loans
+        "f1500": {2022: 900, 2023: 1000, 2024: 1100},  # current liabilities
+        "f1510": {2022: 200, 2023: 250, 2024: 400},  # ST loans
+        "f1520": {2022: 400, 2023: 500, 2024: 800},  # accounts payable
+        "f1600": {2022: 3000, 2023: 3200, 2024: 3100},  # balance total
+        "f1700": {2022: 3000, 2023: 3200, 2024: 3150},  # balance liabilities total
+        "f2110": {2022: 2000, 2023: 1500, 2024: 1000},  # revenue
+        "f2200": {2022: 300, 2023: 250, 2024: 200},  # operating profit
+        "f2330": {2022: 150, 2023: 200, 2024: 250},  # interest expenses
+        "f1230": {
+            2022: 500,
+            2023: 600,
+            2024: 700,
+        },  # receivables (added to fix missing key)
     }
 
     # Run all 15 implemented markers
@@ -971,19 +1238,33 @@ if __name__ == "__main__":
         4: marker_4_low_absolute_liquidity(f["f1250"], f["f1500"]),
         5: marker_5_ppe_drop_25(f["f1150"]),
         6: marker_6_lt_investments_shift(f["f1170"], f["f1600"]),
-        7: marker_7_frozen_receivables(f["f1230"] if "f1230" in f else {2023: 1000, 2024: 1200},
-                                       f["f2110"]),
+        7: marker_7_frozen_receivables(f["f1230"], f["f2110"]),
         8: marker_8_ap_up_rev_down(f["f1520"], f["f2110"]),
         9: marker_9_cash_vs_ap(f["f1250"], f["f1520"]),
-        10: marker_10_debt_load_and_interest_cover(f["f1410"], f["f1510"], f["f2110"], f["f2200"], f["f2330"]),
-        11: marker_11_inventories_up_revenue_down(f["f1210"], f["f2110"]),
-        12: marker_12_large_asset_shifts(f["f1150"], f["f1170"], f["f1240"], f["f1600"]),
-        13: marker_13_reporting_problems(f["f1600"], f["f1700"], f["f2110"], f["f1200"], f["f1500"]),
-        14: marker_14_bankruptcy_obligation_composite(
-            f["f1300"], f["f1200"], f["f1500"], f["f1210"],
-            f["f1410"], f["f1510"], f["f2110"], f["f1250"], f["f1520"]
+        10: marker_10_debt_load_and_interest_cover(
+            f["f1410"], f["f1510"], f["f2110"], f["f2200"], f["f2330"]
         ),
-        15: marker_15_ppe_share_drop_with_flat_or_falling_revenue(f["f1150"], f["f1600"], f["f2110"]),
+        11: marker_11_inventories_up_revenue_down(f["f1210"], f["f2110"]),
+        12: marker_12_large_asset_shifts(
+            f["f1150"], f["f1170"], f["f1240"], f["f1600"]
+        ),
+        13: marker_13_reporting_problems(
+            f["f1600"], f["f1700"], f["f2110"], f["f1200"], f["f1500"]
+        ),
+        14: marker_14_bankruptcy_obligation_composite(
+            f["f1300"],
+            f["f1200"],
+            f["f1500"],
+            f["f1210"],
+            f["f1410"],
+            f["f1510"],
+            f["f2110"],
+            f["f1250"],
+            f["f1520"],
+        ),
+        15: marker_15_ppe_share_drop_with_flat_or_falling_revenue(
+            f["f1150"], f["f1600"], f["f2110"]
+        ),
     }
 
     total_points = sum(results.values())
@@ -992,5 +1273,108 @@ if __name__ == "__main__":
     for k, v in results.items():
         print(f"Marker {k:>2}: {v} points")
     print(f"---\nTOTAL: {total_points} points\n")
-
+    analyze_lots_finances_batch()
     logger.info(f"Full marker check complete. Total={total_points}")
+
+if __name__ == "__main__":
+    # Uncomment to run the demo
+    _demo()
+
+# def analyze_lots_finances_batch(
+#     input_path: str = "debug/lot_details_with_finances.json", output_path: str = None
+# ) -> None:
+#     """
+#     Load the batch JSON, analyze finances_data for each lot using markers,
+#     add results under "markers_analysis" key, and save to a new output file.
+
+#     Args:
+#         input_path: Path to input JSON file
+#         output_path: Path to output JSON file (defaults to input_path with '_analyzed' suffix)
+#     """
+#     path = Path(input_path)
+#     if not path.exists():
+#         logger.warning(f"Input file {input_path} does not exist. Skipping.")
+#         return
+
+#     # Determine output path
+#     if output_path is None:
+#         output_path = path.with_stem(path.stem + "_analyzed")
+#     output = Path(output_path)
+
+#     # Load JSON
+#     with open(path, "r", encoding="utf-8") as f:
+#         batch_data = json.load(f)
+
+#     items = batch_data.get("items", [])
+#     updated_count = 0
+
+#     for item in items:
+#         data = item.get("data", {})
+#         finances_data = data.get("finances_data", {})
+
+#         # Check if already analyzed
+#         if "markers_analysis" in data:
+#             logger.info(f"Skipping already analyzed item: {item.get('url', 'unknown')}")
+#             continue
+
+#         # Extract raw financials (handle error cases)
+#         raw_financials = finances_data.get("financials", {})
+#         if isinstance(raw_financials, dict) and "error" in raw_financials:
+#             data["markers_analysis"] = {
+#                 "error": f"Financials fetch error: {raw_financials['error']}",
+#                 "markers": {},
+#                 "totals": {"sum": 0},
+#                 "autopass": {"pass": False, "reason": None},
+#             }
+#             updated_count += 1
+#             continue
+
+#         # DIAGNOSTIC LOGS: Add these to inspect per-item data
+#         url = item.get("url", "unknown")
+#         inn = data.get("bankrupt_inn", "unknown")
+#         logger.info(f"[DIAG] Processing lot: URL={url}, INN={inn}")
+#         if raw_financials:
+#             sample_keys = list(raw_financials.keys())[:3]  # First 3 keys
+#             sample_vals = {
+#                 k: list(raw_financials[k].get("values", {}).items())[:2]
+#                 for k in sample_keys
+#             }  # Sample values per key
+#             logger.info(
+#                 f"[DIAG] Raw financials sample for {inn}: keys={sample_keys}, sample_values={sample_vals}"
+#             )
+#         else:
+#             logger.info(f"[DIAG] Empty raw_financials for {inn}")
+
+#         # Run markers (financials only; coefficients not used in current markers)
+#         try:
+#             analysis = calculate_all_markers_from_json(raw_financials)
+#             # DIAGNOSTIC: Log normalized sample and total score
+#             normalized = normalize_rsbu_json(raw_financials)
+#             sample_norm = {
+#                 k: dict(list(v.items())[:2]) for k, v in list(normalized.items())[:3]
+#             }  # Sample normalized
+#             logger.info(
+#                 f"[DIAG] Normalized sample for {inn}: {sample_norm}, total_points={analysis['totals']['sum']}"
+#             )
+#             data["markers_analysis"] = analysis
+#             logger.info(
+#                 f"Analyzed item {url}: total points {analysis['totals']['sum']}"
+#             )
+#             updated_count += 1
+#         except Exception as e:
+#             logger.error(f"Error analyzing item {url}: {e}")
+#             data["markers_analysis"] = {
+#                 "error": str(e),
+#                 "markers": {},
+#                 "totals": {"sum": 0},
+#                 "autopass": {"pass": False, "reason": None},
+#             }
+#             updated_count += 1
+
+#     # Save to output file
+#     with open(output, "w", encoding="utf-8") as f:
+#         json.dump(batch_data, f, ensure_ascii=False, indent=2)
+
+#     logger.info(
+#         f"Batch analysis complete. Updated {updated_count}/{len(items)} items. Output saved to {output_path}"
+#     )

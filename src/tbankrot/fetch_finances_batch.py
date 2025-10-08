@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -23,7 +24,45 @@ def _atomic_write_json(data: dict, path: Path | str):
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path_str)
+
+    max_retries = 3
+    retry_delay = 2  # seconds
+    for attempt in range(max_retries):
+        try:
+            os.replace(tmp, path_str)
+            logging.info(
+                f"Successfully wrote JSON to {path_str} on attempt {attempt + 1}"
+            )
+            return
+        except PermissionError as e:
+            if attempt < max_retries - 1:
+                logging.warning(
+                    f"PermissionError on attempt {attempt + 1}/{max_retries} for {path_str}: {e}. Retrying in {retry_delay}s..."
+                )
+                time.sleep(retry_delay)
+            else:
+                logging.error(
+                    f"Failed to replace {tmp} with {path_str} after {max_retries} attempts: {e}. Falling back to direct write."
+                )
+                # Fallback: direct write (less atomic but should work)
+                try:
+                    with open(path_str, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+                    logging.info(f"Fallback direct write successful for {path_str}")
+                    # Clean up tmp
+                    os.remove(tmp)
+                except Exception as fallback_e:
+                    logging.error(
+                        f"Fallback write also failed for {path_str}: {fallback_e}. Tmp file left at {tmp}"
+                    )
+                    raise
+                break
+        except Exception as e:
+            logging.error(f"Unexpected error during replace for {path_str}: {e}")
+            raise
+    # Clean up tmp if it still exists after successful replace (edge case)
+    if os.path.exists(tmp):
+        os.remove(tmp)
 
 
 def _load_json_safely(path: Path | str) -> dict:
@@ -42,7 +81,7 @@ def _load_json_safely(path: Path | str) -> dict:
 def _normalize_progress(existing_data: dict) -> tuple[dict, dict]:
     """
     Normalize existing data to standard schema:
-    {"count": int, "items": [{"url": str, "success": bool, "error": str, "data": dict}]}
+    {"count": int, "items": [{"url": str, "status": str, "error": str, "data": dict}]}
     Returns normalized payload and URL-to-index map.
     """
     items = existing_data.get("items", [])
@@ -51,14 +90,18 @@ def _normalize_progress(existing_data: dict) -> tuple[dict, dict]:
         if isinstance(item, dict) and "url" in item:
             # Ensure data has finances_data if success
             data = item.get("data", {})
-            if item.get("success", False) and "finances_data" not in data:
+            if item.get("status") == "success" and "finances_data" not in data:
                 data["finances_data"] = {"error": "missing data"}
-            norm_items.append({
-                "url": item.get("url", ""),
-                "success": bool(item.get("success", False)),
-                "error": item.get("error", ""),
-                "data": data
-            })
+            norm_items.append(
+                {
+                    "url": item.get("url", ""),
+                    "status": item.get(
+                        "status", "error" if item.get("error") else "new"
+                    ),
+                    "error": item.get("error", ""),
+                    "data": data,
+                }
+            )
     
     payload = {
         "count": len(norm_items),
@@ -125,7 +168,7 @@ async def process_lot(item: Dict[str, Any], context, skip_if_exists: bool = True
     if skip_if_exists and "finances_data" in data and data["finances_data"] is not None:
         if isinstance(data["finances_data"], dict) and "error" not in data["finances_data"]:
             return True, ""  # Already successful
-        elif data.get("success", False):
+        elif data.get("status", "") == "success":
             return True, ""
     
     # Validate INN length
@@ -160,10 +203,10 @@ async def main() -> None:
     # Load and normalize existing output if exists
     existing_raw = _load_json_safely(OUTPUT_FILE)
     progress, url_index = _normalize_progress(existing_raw)
-    
-    # Merge input items with existing progress (add missing fields)
-    items = []
-    processed_count = 0
+
+    # Separate items: errors first, then new
+    error_items = []
+    new_items = []
     skipped_count = 0
     for input_item in input_items:
         url = input_item.get("url", "")
@@ -173,61 +216,75 @@ async def main() -> None:
         # Ensure standard structure
         record = {
             "url": url,
-            "success": False,
+            "status": "error",
             "error": "",
-            "data": input_item.get("data", {})
+            "data": input_item.get("data", {}),
         }
         
         if url in url_index:
             # Merge with existing
             existing_record = progress["items"][url_index[url]]
-            record["success"] = existing_record.get("success", False)
+            record["status"] = existing_record.get("status", "error")
             record["error"] = existing_record.get("error", "")
             record["data"].update(existing_record.get("data", {}))
-        
-        items.append(record)
-        
-        if record["success"]:
+
+        if record["status"] == "success":
             skipped_count += 1
+            continue
+
+        if record["status"] == "error":
+            error_items.append(record)
         else:
-            processed_count += 1
-    
-    logging.info(f"Loaded {len(items)} items: {skipped_count} skipped (existing success), {processed_count} to process")
+            new_items.append(record)
+
+    all_items = error_items + new_items
+    error_count = len(error_items)
+    new_count = len(new_items)
+    logging.info(
+        f"Loaded {len(all_items)} items to process: {skipped_count} skipped (success), {error_count} errors to retry, {new_count} new"
+    )
+
+    if not all_items:
+        print("No items to process.")
+        return
     
     # Launch browser
     browser = Browser(headless=False, datadir="datadir")
     await browser.launch()
 
     try:
-        # Process items that need processing
-        for i, item in enumerate(items):
+        # Process items (errors first)
+        for i, item in enumerate(all_items):
             url = item["url"]
-            if item["success"]:
-                print(f"Skipping lot {i + 1}/{len(items)} (already processed): {url}")
-                continue
-            
-            print(f"Processing lot {i + 1}/{len(items)}: {url}")
+            is_error_retry = i < error_count
+            print(
+                f"Processing {'error retry' if is_error_retry else 'new'} lot {i + 1}/{len(all_items)}: {url}"
+            )
             
             success, error_msg = await process_lot(item, browser.context)
             
             if success:
-                item["success"] = True
+                item["status"] = "success"
                 item["error"] = ""
                 logging.info(f"Successfully processed: {url}")
             else:
-                item["success"] = False
+                item["status"] = "error"
                 item["error"] = error_msg
-                item["data"]["finances_data"] = {"error": error_msg} if "finances_data" not in item["data"] else item["data"]["finances_data"]
+                if "finances_data" not in item["data"]:
+                    item["data"]["finances_data"] = {"error": error_msg}
                 logging.error(f"Error processing {url}: {error_msg}")
             
             # Upsert and atomic save after each item
-            _upsert_item({"count": len(items), "items": items}, url_index, item)
-            _atomic_write_json({"count": len(items), "items": items}, OUTPUT_FILE)
+            _upsert_item({"count": len(all_items), "items": all_items}, url_index, item)
+            _atomic_write_json(
+                {"count": len(all_items), "items": all_items}, OUTPUT_FILE
+            )
         
         print(f"Batch processing complete. Output saved to {OUTPUT_FILE}")
 
     finally:
         await browser.close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
