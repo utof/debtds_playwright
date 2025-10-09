@@ -154,18 +154,21 @@ FINANCE_PARAMS = {
 
 INN_REGEX = re.compile(r'ИНН (\d{10})')
 
-async def fetch_finances_for_inn(inn: str, context) -> Dict[str, Any]:
+async def fetch_finances_for_inn(inn: str, browser: Browser) -> Dict[str, Any]:
     """Fetch financial data for a given INN using listorg run function."""
     logging.info(f"Fetching finances for INN: {inn}")
     try:
-        result = await run(context, inn, **FINANCE_PARAMS)
+        # The `run` function now expects the custom Browser object
+        result = await run(browser, inn, **FINANCE_PARAMS)
         return result
     except Exception as e:
         logging.error(f"Error fetching finances for INN {inn}: {e}")
         return {"error": str(e)}
 
 
-async def process_lot(item: Dict[str, Any], context, skip_if_exists: bool = True) -> tuple[bool, str]:
+async def process_lot(
+    item: Dict[str, Any], browser: Browser, skip_if_exists: bool = True
+) -> tuple[bool, str]:
     """
     Process a single lot: extract INN and fetch finances if needed.
     Returns (success: bool, error: str).
@@ -207,9 +210,12 @@ async def process_lot(item: Dict[str, Any], context, skip_if_exists: bool = True
     ):
         has_success = False
         for inn_key, result in data["finances_data"].items():
-            # Check if this result is actually a success (no error or not a timeout error)
-            if "error" not in result or (
-                "error" in result and "Page.goto: net::ERR_CONNECTION_TIMED_OUT" not in str(result["error"])
+            # Check if this result is valid (no explicit error)
+            # Success means having "financials" key (even if empty) without "error"
+            if (
+                isinstance(result, dict)
+                and "financials" in result
+                and "error" not in result
             ):
                 has_success = True
                 break
@@ -218,80 +224,64 @@ async def process_lot(item: Dict[str, Any], context, skip_if_exists: bool = True
 
     # Fetch finances for ALL valid INNs
     finances_results = {}
-    proxy_change_needed = False
     overall_success = False
     
     for inn in valid_inns:
-        result = await fetch_finances_for_inn(inn, context)
-        
-        if "error" in result:
-            error_msg = str(result["error"])
-            if "Page.goto: net::ERR_CONNECTION_TIMED_OUT" in error_msg:
-                # This is a proxy/connection timeout error - mark for proxy change
-                finances_results[inn] = {
-                    "error": error_msg, 
-                    "needs_proxy_change": True
-                }
-                proxy_change_needed = True
-                logging.warning(f"Proxy timeout detected for INN {inn}. Marking as error and will trigger proxy change.")
-            else:
-                # Regular error - not proxy related
-                finances_results[inn] = {"error": error_msg}
-                logging.error(f"Regular error for INN {inn}: {error_msg}")
-        else:
-            # Success
+        # The new Browser object handles retries and proxy switching internally
+        result = await fetch_finances_for_inn(inn, browser)
+
+        # Check if result is valid (has financials key without error)
+        # Success means having "financials" key (even if empty) without explicit error
+        if (
+            isinstance(result, dict)
+            and "financials" in result
+            and "error" not in result
+        ):
+            # Success - valid financial data (even if empty)
             finances_results[inn] = result
             overall_success = True
             logging.info(f"Successfully fetched finances for INN {inn}")
+        elif "error" in result:
+            # Explicit error
+            error_msg = str(result["error"])
+            finances_results[inn] = {"error": error_msg}
+            logging.error(f"Error for INN {inn}: {error_msg}")
+        else:
+            # No financials and no error - treat as error
+            finances_results[inn] = {"error": "No financial data returned"}
+            logging.error(f"No financial data returned for INN {inn}")
 
     # Set finances_data as dict with INN keys
     data["finances_data"] = finances_results
 
-    # If proxy change is needed, call the function (currently does nothing)
-    if proxy_change_needed:
-        logging.info("Triggering proxy change due to connection timeouts")
-        await change_proxy()
-
-    # Return success only if we had at least one successful fetch
-    # If all were timeout errors, this should be treated as an error at the lot level
+    # Return success only if we had at least one successful fetch with actual data
     if overall_success:
         return True, ""
     else:
         # All attempts failed - mark as error
-        error_summary = "All finance fetches failed"
-        if proxy_change_needed:
-            error_summary += " (proxy timeouts - proxy changed)"
+        error_summary = (
+            "All finance fetches failed - no valid financial data retrieved."
+        )
         return False, error_summary
-
-
-async def change_proxy():
-    """
-    Function to change proxy/IP address when connection timeout errors occur.
-    Currently does nothing - to be implemented later.
-    """
-    logging.info("Proxy change triggered due to connection timeout. Implementation pending.")
-    # TODO: Implement proxy rotation logic here
-    # For now, just log that it was triggered
-    pass
 
 
 async def main() -> None:
     """Main function to process the batch with recovery mechanisms."""
     logging.basicConfig(level=logging.INFO)
-    
+
     if not INPUT_FILE.exists():
         print(f"Input file {INPUT_FILE} does not exist.")
         return
-    
+
     # Load input
     with open(INPUT_FILE, "r", encoding="utf-8") as f:
         input_data: Dict[str, Any] = json.load(f)
-    
+
     input_items: List[Dict[str, Any]] = input_data.get("items", [])
     if not input_items:
         print("No items found in JSON.")
         return
-    
+
     # Load and normalize existing output if exists
     existing_raw = _load_json_safely(OUTPUT_FILE)
     progress, url_index = _normalize_progress(existing_raw)
@@ -307,7 +297,7 @@ async def main() -> None:
         url = input_item.get("url", "")
         if not url:
             continue
-        
+
         # Ensure standard structure
         record = {
             "url": url,
@@ -315,7 +305,7 @@ async def main() -> None:
             "error": "",
             "data": input_item.get("data", {}),
         }
-        
+
         if url in url_index:
             # Merge with existing data
             existing_record = progress["items"][url_index[url]]
@@ -332,8 +322,32 @@ async def main() -> None:
             url_index[url] = len(all_items) - 1
 
         # Check if this item needs processing
+        # Skip only if status is "success" AND finances_data contains valid financial data
         if record["status"] == "success":
-            skipped_count += 1
+            # Validate that success items actually have valid financial data
+            finances_data = record.get("data", {}).get("finances_data", {})
+            has_valid_data = False
+
+            if isinstance(finances_data, dict):
+                for inn_key, result in finances_data.items():
+                    if (
+                        isinstance(result, dict)
+                        and "financials" in result
+                        and "error" not in result
+                    ):
+                        has_valid_data = True
+                        break
+
+            if has_valid_data:
+                skipped_count += 1
+            else:
+                # Mark as error - success status but no valid data
+                record["status"] = "error"
+                record["error"] = "Success status but no valid financial data"
+                items_to_process.append(record)
+                logging.warning(
+                    f"Re-processing {record['url']}: marked success but has no valid financial data"
+                )
         else:
             items_to_process.append(record)
 
@@ -351,7 +365,7 @@ async def main() -> None:
     if not items_to_process:
         print("No items to process.")
         return
-    
+
     # Launch browser
     browser = Browser(headless=False, datadir="datadir")
     await browser.launch()
@@ -364,8 +378,8 @@ async def main() -> None:
             print(
                 f"Processing {'error retry' if is_error_retry else 'new'} lot {i + 1}/{len(items_to_process)}: {url}"
             )
-            
-            success, error_msg = await process_lot(item, browser.context)
+
+            success, error_msg = await process_lot(item, browser)
             
             if success:
                 item["status"] = "success"

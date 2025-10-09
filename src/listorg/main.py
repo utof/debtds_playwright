@@ -44,23 +44,34 @@ def _is_konkursny(text: str | None) -> bool:
     # robust contains check (covers cases like "конкурсный управляющий", "и.о. конкурсного управляющего", etc.)
     return 'конкурсн' in t and 'управля' in t
 
-async def _goto_search_and_validate(page: Page, value: str | int) -> bool:
+async def _goto_search_and_validate(
+    browser: Browser, page: Page, value: str | int
+) -> tuple[Page, bool]:
     """
     Navigates to list-org.com search by INN or ORGN and handles captcha.
 
     Returns:
-        True  → page contains at least one company result
-        False → "Найдено 0 организаций" found (no results)
+        Tuple[Page, bool]: The page object and a boolean indicating if results were found.
     """
-    await page.goto(f"https://www.list-org.com/search?val={value}", wait_until="domcontentloaded")
+    page = await browser.goto_with_retry(
+        f"https://www.list-org.com/search?val={value}", wait_until="domcontentloaded"
+    )
     await handle_captcha(page)
 
     if await page.locator("p:has-text('Найдено 0 организаций')").count() > 0:
         logger.warning(f"No organizations found for search value={value}")
-        return False
-    return True
+        return page, False
+    return page, True
 
-async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: str | None = None, publish_date: str | None = None, orgn: str | None = None, codes_filter: str | None = None) -> dict:
+async def run(
+    browser: Browser,
+    inn: str,
+    method: str,
+    years_filter: str | None = None,
+    publish_date: str | None = None,
+    orgn: str | None = None,
+    codes_filter: str | None = None,
+) -> dict:
     """
     Scrapes company data from list-org.com based on the INN.
 
@@ -75,7 +86,7 @@ async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: s
     inn = process_inn(inn) if inn else inn
     logger.info(f"Processing method={method} for INN={inn} ORGN={orgn}")
 
-    page = await browser.new_page()
+    page = await browser.default_context.new_page()
     logger.debug("New page created.")
 
     try:
@@ -84,7 +95,7 @@ async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: s
             if orgn is None or str(orgn).strip() in ("", "0"):
                 return {"data": "оргн пуст"}
 
-            found = await _goto_search_and_validate(page, orgn)
+            page, found = await _goto_search_and_validate(browser, page, orgn)
             if not found:
                 return {"data": "нет данных о компании"}
 
@@ -92,9 +103,9 @@ async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: s
             return {"data": data}
 
         # ---- INN-based modes ----
-        found = await _goto_search_and_validate(page, inn)
+        page, found = await _goto_search_and_validate(browser, page, inn)
         if not found:
-            return {"data": "нет данных о компании"} 
+            return {"data": "нет данных о компании"}
         
         # Navigate to the company page
         await page.locator("a[href*='/company/']").first.click()
@@ -188,7 +199,7 @@ async def run(browser: PlaywrightBrowser, inn: str, method: str, years_filter: s
             input_data: "OrderedDict[str, bool]" = OrderedDict()
             check_page: Page | None = None
             try:
-                check_page = await browser.new_page()
+                check_page = await browser.context.new_page()
                 for idx, person in enumerate(ordered_names):
                     try:
                         res = await is_disqualified_on(check_page, person, publish_date)
@@ -275,9 +286,9 @@ async def main():
     inn = "3328452719" # RDL complex
     try:
         browser = Browser(headless=False, datadir="datadir")
-        await browser.launch() 
+        await browser.launch()
         try:
-            jsonn = await run(browser.context, inn, "rdl", publish_date="26.03.2025")
+            jsonn = await run(browser, inn, "rdl", publish_date="26.03.2025")
         finally:
             with open(f"{inn}_founders_data.json", "w", encoding="utf-8") as f:
                 json.dump(jsonn, f, ensure_ascii=False, indent=4)
