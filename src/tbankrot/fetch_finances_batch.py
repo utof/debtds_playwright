@@ -117,15 +117,23 @@ def _upsert_item(progress: dict, index: dict, record: dict):
     if not url:
         return
     if url in index:
-        progress["items"][index[url]] = record
+        # Find the actual index in current items list
+        current_items = progress["items"]
+        current_index = None
+        for j, it in enumerate(current_items):
+            if it.get("url") == url:
+                current_index = j
+                break
+        if current_index is not None:
+            current_items[current_index] = record
     else:
         progress["items"].append(record)
         index[url] = len(progress["items"]) - 1
         progress["count"] = len(progress["items"])
 
 
-INPUT_FILE = Path("debug/lot_details_filtered_without_invalid_inn.json")
-OUTPUT_FILE = Path("debug/lot_details_with_finances.json")
+INPUT_FILE = Path("debug/lot_details_with_inn_ogrn_check.json")
+OUTPUT_FILE = Path("debug/lot_details_with_finances2.json")
 
 FINANCE_PARAMS = {
     "method": "finances",
@@ -152,34 +160,70 @@ async def process_lot(item: Dict[str, Any], context, skip_if_exists: bool = True
     Returns (success: bool, error: str).
     """
     data = item.get("data", {})
-    bankrupt_inn = data.get("bankrupt_inn", "")
-    
-    if not bankrupt_inn or bankrupt_inn.strip() == "":
-        # Try to extract INN from announcement_text if bankrupt_inn is empty
+
+    # Add skip conditions before any INN extraction or fetching
+    if (
+        data.get("individuals") == "физлицо"
+        or data.get("empty_individuals_but_no_inn_orgn") == True
+        or data.get("empty_inn_but_nonempty_orgn") == True
+    ):
+        data["finances_data"] = {}
+        return True, ""
+
+    # Change from bankrupt_inn to debtor_inn array
+    debtor_inn = data.get("debtor_inn", [])
+
+    valid_inns: list[str] = []
+
+    # Process all INNs in debtor_inn array
+    if debtor_inn and isinstance(debtor_inn, list) and len(debtor_inn) > 0:
+        for potential_inn in debtor_inn:
+            if isinstance(potential_inn, str):
+                inn_digits = re.sub(r"\D", "", potential_inn.strip())
+                if len(inn_digits) in (9, 10):  # Accept both 9 and 10 digits
+                    valid_inns.append(inn_digits)
+
+    # If no valid INNs found in debtor_inn array, fallback to extracting from announcement_text
+    if not valid_inns:
         announcement_text = data.get("announcement_text", "")
         match = INN_REGEX.search(announcement_text)
-        if not match:
-            return False, "No INN found in announcement_text"
-        inn = match.group(1)
-    else:
-        inn = bankrupt_inn.strip()
-    
-    # Skip if already has valid finances_data
-    if skip_if_exists and "finances_data" in data and data["finances_data"] is not None:
-        if isinstance(data["finances_data"], dict) and "error" not in data["finances_data"]:
-            return True, ""  # Already successful
-        elif data.get("status", "") == "success":
-            return True, ""
-    
-    # Validate INN length
-    inn_digits = re.sub(r'\D', '', inn)
-    if len(inn_digits) not in (9, 10):
-        data["finances_data"] = {"error": "ошибка: физлицо"}
-        return False, "INN not 9 or 10 digits"
-    
-    # Fetch finances
-    result = await fetch_finances_for_inn(inn, context)
-    data["finances_data"] = result
+        if match:
+            inn_digits = re.sub(r"\D", "", match.group(1))
+            if len(inn_digits) in (9, 10):  # Accept both 9 and 10 digits
+                valid_inns.append(inn_digits)
+
+    # If no valid INNs found, set empty finances_data and return success
+    if not valid_inns:
+        data["finances_data"] = {}
+        return True, ""
+
+    # Updated skip_if_exists check for dict format
+    if (
+        skip_if_exists
+        and "finances_data" in data
+        and isinstance(data["finances_data"], dict)
+        and len(data["finances_data"]) > 0
+    ):
+        has_success = False
+        for inn_key, result in data["finances_data"].items():
+            if "error" not in result:
+                has_success = True
+                break
+        if has_success:
+            return True, ""  # Already has some successful data
+
+    # Fetch finances for ALL valid INNs
+    finances_results = {}
+    for inn in valid_inns:
+        result = await fetch_finances_for_inn(inn, context)
+        if "error" not in result:
+            finances_results[inn] = result
+        else:
+            finances_results[inn] = {"error": result["error"]}
+
+    # Set finances_data as dict with INN keys
+    data["finances_data"] = finances_results
+
     return True, ""
 
 
@@ -204,10 +248,13 @@ async def main() -> None:
     existing_raw = _load_json_safely(OUTPUT_FILE)
     progress, url_index = _normalize_progress(existing_raw)
 
-    # Separate items: errors first, then new
-    error_items = []
-    new_items = []
+    # Start with ALL existing items to preserve progress
+    all_items = progress["items"].copy()
+
+    # Track items that need processing
+    items_to_process = []
     skipped_count = 0
+
     for input_item in input_items:
         url = input_item.get("url", "")
         if not url:
@@ -222,29 +269,38 @@ async def main() -> None:
         }
         
         if url in url_index:
-            # Merge with existing
+            # Merge with existing data
             existing_record = progress["items"][url_index[url]]
             record["status"] = existing_record.get("status", "error")
             record["error"] = existing_record.get("error", "")
             record["data"].update(existing_record.get("data", {}))
 
+            # Update the record in all_items
+            if url_index[url] < len(all_items):
+                all_items[url_index[url]] = record
+        else:
+            # New item - add to all_items
+            all_items.append(record)
+            url_index[url] = len(all_items) - 1
+
+        # Check if this item needs processing
         if record["status"] == "success":
             skipped_count += 1
-            continue
-
-        if record["status"] == "error":
-            error_items.append(record)
         else:
-            new_items.append(record)
+            items_to_process.append(record)
 
-    all_items = error_items + new_items
+    # Separate items to process: errors first, then new
+    error_items = [item for item in items_to_process if item["status"] == "error"]
+    new_items = [item for item in items_to_process if item["status"] != "error"]
+    items_to_process = error_items + new_items
+
     error_count = len(error_items)
     new_count = len(new_items)
     logging.info(
-        f"Loaded {len(all_items)} items to process: {skipped_count} skipped (success), {error_count} errors to retry, {new_count} new"
+        f"Loaded {len(all_items)} total items: {skipped_count} skipped (success), {error_count} errors to retry, {new_count} new"
     )
 
-    if not all_items:
+    if not items_to_process:
         print("No items to process.")
         return
     
@@ -253,12 +309,12 @@ async def main() -> None:
     await browser.launch()
 
     try:
-        # Process items (errors first)
-        for i, item in enumerate(all_items):
+        # Process items that need work (errors first, then new)
+        for i, item in enumerate(items_to_process):
             url = item["url"]
             is_error_retry = i < error_count
             print(
-                f"Processing {'error retry' if is_error_retry else 'new'} lot {i + 1}/{len(all_items)}: {url}"
+                f"Processing {'error retry' if is_error_retry else 'new'} lot {i + 1}/{len(items_to_process)}: {url}"
             )
             
             success, error_msg = await process_lot(item, browser.context)
@@ -273,8 +329,8 @@ async def main() -> None:
                 if "finances_data" not in item["data"]:
                     item["data"]["finances_data"] = {"error": error_msg}
                 logging.error(f"Error processing {url}: {error_msg}")
-            
-            # Upsert and atomic save after each item
+
+            # Update the item in all_items and save progress
             _upsert_item({"count": len(all_items), "items": all_items}, url_index, item)
             _atomic_write_json(
                 {"count": len(all_items), "items": all_items}, OUTPUT_FILE
