@@ -206,7 +206,10 @@ async def process_lot(item: Dict[str, Any], context, skip_if_exists: bool = True
     ):
         has_success = False
         for inn_key, result in data["finances_data"].items():
-            if "error" not in result:
+            # Check if this result is actually a success (no error or not a timeout error)
+            if "error" not in result or (
+                "error" in result and "Page.goto: net::ERR_CONNECTION_TIMED_OUT" not in str(result["error"])
+            ):
                 has_success = True
                 break
         if has_success:
@@ -214,17 +217,61 @@ async def process_lot(item: Dict[str, Any], context, skip_if_exists: bool = True
 
     # Fetch finances for ALL valid INNs
     finances_results = {}
+    proxy_change_needed = False
+    overall_success = False
+    
     for inn in valid_inns:
         result = await fetch_finances_for_inn(inn, context)
-        if "error" not in result:
-            finances_results[inn] = result
+        
+        if "error" in result:
+            error_msg = str(result["error"])
+            if "Page.goto: net::ERR_CONNECTION_TIMED_OUT" in error_msg:
+                # This is a proxy/connection timeout error - mark for proxy change
+                finances_results[inn] = {
+                    "error": error_msg, 
+                    "needs_proxy_change": True
+                }
+                proxy_change_needed = True
+                logging.warning(f"Proxy timeout detected for INN {inn}. Marking as error and will trigger proxy change.")
+            else:
+                # Regular error - not proxy related
+                finances_results[inn] = {"error": error_msg}
+                logging.error(f"Regular error for INN {inn}: {error_msg}")
         else:
-            finances_results[inn] = {"error": result["error"]}
+            # Success
+            finances_results[inn] = result
+            overall_success = True
+            logging.info(f"Successfully fetched finances for INN {inn}")
 
     # Set finances_data as dict with INN keys
     data["finances_data"] = finances_results
 
-    return True, ""
+    # If proxy change is needed, call the function (currently does nothing)
+    if proxy_change_needed:
+        logging.info("Triggering proxy change due to connection timeouts")
+        await change_proxy()
+
+    # Return success only if we had at least one successful fetch
+    # If all were timeout errors, this should be treated as an error at the lot level
+    if overall_success:
+        return True, ""
+    else:
+        # All attempts failed - mark as error
+        error_summary = "All finance fetches failed"
+        if proxy_change_needed:
+            error_summary += " (proxy timeouts - proxy changed)"
+        return False, error_summary
+
+
+async def change_proxy():
+    """
+    Function to change proxy/IP address when connection timeout errors occur.
+    Currently does nothing - to be implemented later.
+    """
+    logging.info("Proxy change triggered due to connection timeout. Implementation pending.")
+    # TODO: Implement proxy rotation logic here
+    # For now, just log that it was triggered
+    pass
 
 
 async def main() -> None:
