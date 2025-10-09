@@ -7,7 +7,8 @@ import requests
 from dotenv import load_dotenv
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = "google/gemini-2.5-flash-lite"
+# OPENROUTER_MODEL = "x-ai/grok-4-fast"
+OPENROUTER_MODEL = "google/gemini-2.5-flash-lite-preview-09-2025"
 """
 The `ai_request.py` module provides a single entrypoint function `update_debtor_data(data)` that takes a Python dictionary with at least the key `"announcement_text"` and enriches it by calling the OpenRouter API (Gemini 2.5 flash-lite) to extract structured debtor information. It automatically loads your `OPENROUTER_APIKEY` from `.env`, sends the text to the model, and parses the JSON response into consistent arrays: `debtor_name`, `debtor_inn`, `debtor_ogrn`, `case_number`, and `nominal_debt` (floats). The function gracefully handles malformed responses, ensures those keys always exist as lists, and appends any extracted values into them.
 
@@ -357,7 +358,11 @@ def update_debtor_flags(data: dict) -> dict:
   • "физлицо" — если должники представлены ИСКЛЮЧИТЕЛЬНО как физические лица (население, граждане, люди), без упоминаний организаций;
   • "" — во всех остальных случаях (включая смешанные списки, компании и т.п.).
 
-Используй ТОЛЬКО announcement_text. Не используй никаких других полей.
+Вот еще несколько симптомов иностранных комапний(но всякое бывает!):
+1. Vellia Corporation(англ. буквы)
+2. Atena OOO
+3. "... с местом нахождения по адресу: Соединенные Штаты Америки, 19808, Делавэр..."
+4. "Права требования к 4 дебиторам в общем размере 928 710,37 CNY.." - валюта
 
 Агрегация:
 - Если ВСЕ обнаруженные должники — иностранные → foreign_debtor_flag = "иностранная".
@@ -371,13 +376,16 @@ def update_debtor_flags(data: dict) -> dict:
   "individuals": "физлицо" | ""
 }}
 
-Пример:
-announcement_text: "Право требования к физическим лицам …"
+Пример входных-выходных данных:
+announcement_text: 
+Право требования к физическим лицам …
+
 Результат:
 {{
   "foreign_debtor_flag": 0,
   "individuals": "физлицо"
 }}
+
 
 Теперь обработай следующий текст и верни только JSON:
 announcement_text:
