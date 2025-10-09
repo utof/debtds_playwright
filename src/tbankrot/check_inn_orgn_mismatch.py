@@ -7,7 +7,7 @@ import os
 from loguru import logger
 
 INPUT_FILE = "debug/lot_details_full_ai.json"
-OUTPUT_FILE = "debug/lot_details_with_inn_orgn_check.json"
+OUTPUT_FILE = "debug/lot_details_with_inn_ogrn_check.json"
 
 def load_json(path: str):
     """Load JSON file with error handling."""
@@ -87,7 +87,7 @@ def main():
         
         # Check 1: Empty INN but non-empty OGRN
         has_inn_orgn_mismatch = check_inn_orgn_mismatch(lot_data)
-        lot["empty_inn_but_nonempty_orgn"] = has_inn_orgn_mismatch
+        lot["data"]["empty_inn_but_nonempty_orgn"] = has_inn_orgn_mismatch
         
         if has_inn_orgn_mismatch:
             mismatch_count += 1
@@ -95,7 +95,7 @@ def main():
         
         # Check 2: Empty individuals but no INN/OGRN
         has_individuals_issue = check_empty_individuals_no_inn_orgn(lot_data)
-        lot["empty_individuals_but_no_inn_orgn"] = has_individuals_issue
+        lot["data"]["empty_individuals_but_no_inn_orgn"] = has_individuals_issue
         
         if has_individuals_issue:
             individuals_issue_count += 1

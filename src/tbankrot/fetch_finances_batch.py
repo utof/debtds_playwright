@@ -11,6 +11,17 @@ from src.browser import Browser
 from src.listorg.main import run
 
 
+def _is_valid_inn(inn_string: str) -> bool:
+    """Validate if a string is a valid INN (9 or 10 digits)."""
+    if not isinstance(inn_string, str):
+        return False
+    # Trim whitespace
+    inn_string = inn_string.strip()
+
+    # Check if the string contains ONLY 9 or 10 digits, nothing else.
+    return bool(re.fullmatch(r"^\d{9,10}$", inn_string))
+
+
 def _atomic_write_json(data: dict, path: Path | str):
     """Custom atomic write that handles Path objects and dict data."""
     if isinstance(path, Path):
@@ -178,19 +189,9 @@ async def process_lot(item: Dict[str, Any], context, skip_if_exists: bool = True
     # Process all INNs in debtor_inn array
     if debtor_inn and isinstance(debtor_inn, list) and len(debtor_inn) > 0:
         for potential_inn in debtor_inn:
-            if isinstance(potential_inn, str):
-                inn_digits = re.sub(r"\D", "", potential_inn.strip())
-                if len(inn_digits) in (9, 10):  # Accept both 9 and 10 digits
-                    valid_inns.append(inn_digits)
+            if _is_valid_inn(potential_inn):
+                valid_inns.append(potential_inn.strip())
 
-    # If no valid INNs found in debtor_inn array, fallback to extracting from announcement_text
-    if not valid_inns:
-        announcement_text = data.get("announcement_text", "")
-        match = INN_REGEX.search(announcement_text)
-        if match:
-            inn_digits = re.sub(r"\D", "", match.group(1))
-            if len(inn_digits) in (9, 10):  # Accept both 9 and 10 digits
-                valid_inns.append(inn_digits)
 
     # If no valid INNs found, set empty finances_data and return success
     if not valid_inns:
