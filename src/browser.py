@@ -4,6 +4,7 @@ from patchright.async_api import (
 )
 from patchright.async_api import (
     BrowserContext,
+    Error,
     Playwright,
     TimeoutError,
     async_playwright,
@@ -58,32 +59,93 @@ class Browser:
     async def goto_with_retry(self, url: str, **kwargs):
         """
         Tries to navigate to a URL using the current context.
-        On TimeoutError, recreates the persistent context with a proxy.
+        On timeout/connection errors, rotates through proxies until one works.
         Once proxy is enabled, all subsequent requests use proxy.
         """
+        page = None
         try:
             page = await self.default_context.new_page()
             await page.goto(url, **kwargs)
             return page
-        except TimeoutError:
-            logger.warning(f"Timeout error for URL: {url}. Switching to proxy...")
+        except (TimeoutError, Error) as e:
+            # Check if it's a timeout or connection error
+            error_msg = str(e).lower()
+            is_timeout_error = any(
+                keyword in error_msg
+                for keyword in [
+                    "timeout",
+                    "err_connection_timed_out",
+                    "err_timed_out",
+                    "err_connection_refused",
+                    "err_connection_reset",
+                ]
+            )
 
-            # Close the failed page
-            await page.close()
-
-            # Get new proxy
-            new_proxy = self.proxy_manager.get_next_proxy()
-            if not new_proxy:
-                logger.error("No proxies available to retry.")
+            if not is_timeout_error:
+                # Not a timeout/connection error, close page and re-raise
+                if page:
+                    await page.close()
                 raise
 
-            # Switch to proxy mode by recreating persistent context with proxy
-            await self._switch_to_proxy(new_proxy)
+            logger.warning(
+                f"Connection/timeout error for URL: {url}. Switching to proxy..."
+            )
 
-            # Retry with the new proxied persistent context
-            page = await self.default_context.new_page()
-            await page.goto(url, **kwargs)
-            return page
+            # Close the failed page
+            if page:
+                await page.close()
+                page = None
+
+            # Try rotating through proxies until one works
+            max_proxy_attempts = 5  # Limit proxy rotation attempts
+            for attempt in range(max_proxy_attempts):
+                # Get new proxy
+                new_proxy = self.proxy_manager.get_next_proxy()
+                if not new_proxy:
+                    logger.error("No proxies available to retry.")
+                    raise
+
+                # Switch to proxy mode by recreating persistent context with proxy
+                await self._switch_to_proxy(new_proxy)
+
+                # Retry with the new proxied persistent context
+                try:
+                    page = await self.default_context.new_page()
+                    await page.goto(url, **kwargs)
+                    logger.success(
+                        f"Successfully loaded URL with proxy after {attempt + 1} attempt(s)"
+                    )
+                    return page
+                except (TimeoutError, Error) as proxy_error:
+                    # Clean up page
+                    if page:
+                        await page.close()
+                        page = None
+
+                    # Check if it's still a timeout error
+                    proxy_error_msg = str(proxy_error).lower()
+                    is_proxy_timeout = any(
+                        keyword in proxy_error_msg
+                        for keyword in [
+                            "timeout",
+                            "err_connection_timed_out",
+                            "err_timed_out",
+                            "err_connection_refused",
+                            "err_connection_reset",
+                        ]
+                    )
+
+                    if not is_proxy_timeout:
+                        # Not a timeout error, give up
+                        raise proxy_error
+
+                    if attempt < max_proxy_attempts - 1:
+                        logger.warning(
+                            f"Proxy attempt {attempt + 1} failed, trying next proxy..."
+                        )
+                    else:
+                        logger.error(f"All {max_proxy_attempts} proxy attempts failed")
+                        raise proxy_error
 
     async def _switch_to_proxy(self, proxy_config: dict):
         """

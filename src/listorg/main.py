@@ -45,7 +45,7 @@ def _is_konkursny(text: str | None) -> bool:
     return 'конкурсн' in t and 'управля' in t
 
 async def _goto_search_and_validate(
-    browser: Browser, page: Page, value: str | int
+    browser: Browser, value: str | int
 ) -> tuple[Page, bool]:
     """
     Navigates to list-org.com search by INN or ORGN and handles captcha.
@@ -86,16 +86,16 @@ async def run(
     inn = process_inn(inn) if inn else inn
     logger.info(f"Processing method={method} for INN={inn} ORGN={orgn}")
 
-    page = await browser.default_context.new_page()
-    logger.debug("New page created.")
-
+    # Don't create page here - _goto_search_and_validate will create and return one
+    page = None
+    
     try:
         # ---- ORGN → INN mode ----
         if method == "find_inn_by_orgn":
             if orgn is None or str(orgn).strip() in ("", "0"):
                 return {"data": "оргн пуст"}
 
-            page, found = await _goto_search_and_validate(browser, page, orgn)
+            page, found = await _goto_search_and_validate(browser, orgn)
             if not found:
                 return {"data": "нет данных о компании"}
 
@@ -103,7 +103,7 @@ async def run(
             return {"data": data}
 
         # ---- INN-based modes ----
-        page, found = await _goto_search_and_validate(browser, page, inn)
+        page, found = await _goto_search_and_validate(browser, inn)
         if not found:
             return {"data": "нет данных о компании"}
         
@@ -272,12 +272,14 @@ async def run(
 
     except Exception as e:
         logger.exception(f"An error occurred during scraping for INN {inn}: {e}")
-        await page.screenshot(path=f"error_{inn}.png")
+        if page:
+            await page.screenshot(path=f"error_{inn}.png")
         return {"error": str(e)}
     
     finally:
-        await page.close()
-        logger.debug("Page closed.")
+        if page:
+            await page.close()
+            logger.debug("Page closed.")
 
 
 async def main():

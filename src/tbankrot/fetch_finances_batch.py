@@ -5,7 +5,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.browser import Browser
 from src.listorg.main import run
@@ -168,10 +168,10 @@ async def fetch_finances_for_inn(inn: str, browser: Browser) -> Dict[str, Any]:
 
 async def process_lot(
     item: Dict[str, Any], browser: Browser, skip_if_exists: bool = True
-) -> tuple[bool, str]:
+) -> tuple[bool, str, bool]:
     """
     Process a single lot: extract INN and fetch finances if needed.
-    Returns (success: bool, error: str).
+    Returns (success: bool, error: str, used_browser: bool).
     """
     data = item.get("data", {})
 
@@ -182,7 +182,7 @@ async def process_lot(
         or data.get("empty_inn_but_nonempty_orgn") == True
     ):
         data["finances_data"] = {}
-        return True, ""
+        return True, "", False  # No browser used
 
     # Change from bankrupt_inn to debtor_inn array
     debtor_inn = data.get("debtor_inn", [])
@@ -199,7 +199,7 @@ async def process_lot(
     # If no valid INNs found, set empty finances_data and return success
     if not valid_inns:
         data["finances_data"] = {}
-        return True, ""
+        return True, "", False  # No browser used
 
     # Updated skip_if_exists check for dict format
     if (
@@ -220,7 +220,7 @@ async def process_lot(
                 has_success = True
                 break
         if has_success:
-            return True, ""  # Already has some successful data
+            return True, "", False  # Already has data, no browser used
 
     # Fetch finances for ALL valid INNs
     finances_results = {}
@@ -256,13 +256,13 @@ async def process_lot(
 
     # Return success only if we had at least one successful fetch with actual data
     if overall_success:
-        return True, ""
+        return True, "", True  # Browser was used
     else:
         # All attempts failed - mark as error
         error_summary = (
             "All finance fetches failed - no valid financial data retrieved."
         )
-        return False, error_summary
+        return False, error_summary, True  # Browser was used
 
 
 async def main() -> None:
@@ -371,6 +371,11 @@ async def main() -> None:
     await browser.launch()
 
     try:
+        # Track accumulated lots for batched saving
+        accumulated_lots: List[str] = []
+        browser_used_count: int = 0
+        no_browser_count: int = 0
+        
         # Process items that need work (errors first, then new)
         for i, item in enumerate(items_to_process):
             url = item["url"]
@@ -379,7 +384,7 @@ async def main() -> None:
                 f"Processing {'error retry' if is_error_retry else 'new'} lot {i + 1}/{len(items_to_process)}: {url}"
             )
 
-            success, error_msg = await process_lot(item, browser)
+            success, error_msg, used_browser = await process_lot(item, browser)
             
             if success:
                 item["status"] = "success"
@@ -392,13 +397,33 @@ async def main() -> None:
                     item["data"]["finances_data"] = {"error": error_msg}
                 logging.error(f"Error processing {url}: {error_msg}")
 
-            # Update the item in all_items and save progress
+            # Update the item in all_items
             _upsert_item({"count": len(all_items), "items": all_items}, url_index, item)
+            
+            # Accumulate this lot
+            accumulated_lots.append(url)
+            
+            if used_browser:
+                browser_used_count += 1
+                # Save all accumulated lots when browser was used
+                logging.info(f"Browser used - saving {len(accumulated_lots)} accumulated lot(s)")
+                _atomic_write_json(
+                    {"count": len(all_items), "items": all_items}, OUTPUT_FILE
+                )
+                accumulated_lots = []  # Reset accumulator
+            else:
+                no_browser_count += 1
+                logging.info(f"No browser used - accumulated {len(accumulated_lots)} lot(s) for next save")
+        
+        # Save any remaining accumulated lots at the end
+        if accumulated_lots:
+            logging.info(f"Final save - saving {len(accumulated_lots)} remaining accumulated lot(s)")
             _atomic_write_json(
                 {"count": len(all_items), "items": all_items}, OUTPUT_FILE
             )
         
-        print(f"Batch processing complete. Output saved to {OUTPUT_FILE}")
+        print(f"Batch processing complete. Browser used: {browser_used_count}, No browser: {no_browser_count}")
+        print(f"Output saved to {OUTPUT_FILE}")
 
     finally:
         await browser.close()
