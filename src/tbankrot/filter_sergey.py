@@ -33,18 +33,18 @@ PREF_YEARS_ORDER = [2025, 2024, 2023, 2022]  # prefer newer if present
 def process_batch_for_export(
     input_path: str | Path = "debug/lot_details_with_finances_analyzed.json",
     *,
-    keep_only_autopass: bool = False,  # Step 1: drop items where autopass == False
-    drop_financials: bool = False,  # Step 4: drop finances_data.financials
+    keep_only_autopass: bool = False,  # Step 1: drop items where autopass == False (any INN)
+    drop_financials: bool = False,  # Step 4: drop finances_data[inn].financials
 ) -> list[dict]:
     """
     Load the JSON produced by analyze_lots_finances_batch (the _analyzed file by default),
     optionally filter items, and return a *list of cleaned data dicts* (no file is written).
 
     Steps (matching your spec):
-      1) (optional via keep_only_autopass) remove items with autopass: false
+      1) (optional via keep_only_autopass) remove items where NO INN autopasses
       2) flatten one level: each item becomes item["data"] (this step is *on*; see FLATTEN_TO_DATA)
       3) remove 'raw_api_response'
-      4) (optional via drop_financials) remove 'financials' inside 'finances_data'
+      4) (optional via drop_financials) remove 'financials' inside each INN's finances_data
       5) remove 'prev_lots_count'
     """
     path = Path(input_path)
@@ -72,12 +72,36 @@ def process_batch_for_export(
         if not isinstance(obj, dict):
             continue
 
-        # Step 1: keep only autopass==True if requested
+        # Step 1: keep only if ANY INN autopasses (when keep_only_autopass is True)
         if keep_only_autopass:
-            autopass = (
-                obj.get("markers_analysis", {}).get("autopass", {}).get("pass", False)
-            )
-            if not autopass:
+            markers_analysis = obj.get("markers_analysis", {})
+            any_autopass = False
+
+            if isinstance(markers_analysis, dict):
+                # Check if this is the NEW structure: {inn: {markers, totals, autopass}}
+                # vs OLD structure: {markers, totals, autopass}
+                # NEW structure would have INN strings as keys, OLD has "markers", "totals", "autopass"
+                has_markers_key = "markers" in markers_analysis
+
+                if has_markers_key:
+                    # OLD structure: {markers: {...}, totals: {...}, autopass: {...}}
+                    autopass_info = markers_analysis.get("autopass", {})
+                    if isinstance(autopass_info, dict) and autopass_info.get(
+                        "pass", False
+                    ):
+                        any_autopass = True
+                else:
+                    # NEW structure: {inn: {markers, totals, autopass}, ...}
+                    for inn, inn_markers in markers_analysis.items():
+                        if isinstance(inn_markers, dict):
+                            autopass_info = inn_markers.get("autopass", {})
+                            if isinstance(autopass_info, dict) and autopass_info.get(
+                                "pass", False
+                            ):
+                                any_autopass = True
+                                break
+
+            if not any_autopass:
                 continue
 
         # Work on a shallow copy to avoid mutating original data attached to batch
@@ -86,12 +110,24 @@ def process_batch_for_export(
         # Step 3: remove raw_api_response
         row.pop("raw_api_response", None)
 
-        # Step 4: optionally drop finances_data.financials (keep coefficients etc.)
+        # Step 4: optionally drop financials from finances_data
         if drop_financials:
             fd = row.get("finances_data")
             if isinstance(fd, dict):
                 fd = dict(fd)
-                fd.pop("financials", None)
+                # Check if OLD structure (has "financials" key) or NEW (INN keys)
+                has_financials_key = "financials" in fd
+
+                if has_financials_key:
+                    # OLD structure: remove financials directly
+                    fd.pop("financials", None)
+                else:
+                    # NEW structure: remove financials from each INN
+                    for inn, inn_data in fd.items():
+                        if isinstance(inn_data, dict):
+                            inn_data = dict(inn_data)
+                            inn_data.pop("financials", None)
+                            fd[inn] = inn_data
                 row["finances_data"] = fd
 
         # Step 5: remove prev_lots_count
@@ -184,12 +220,21 @@ def save_items_to_xlsx(
                 parts.append(f"  {y_str}: {v_norm}")
         return "\n".join(parts)
 
-    def _render_markers(markers_analysis: dict) -> str:
+    def _render_markers_single_inn(markers_analysis: dict) -> str:
+        """Render markers for a single INN."""
         if not isinstance(markers_analysis, dict):
             return ""
         markers = markers_analysis.get("markers") or {}
         totals = markers_analysis.get("totals") or {}
+        autopass = markers_analysis.get("autopass") or {}
+        error = markers_analysis.get("error")
+
         out: list[str] = []
+
+        # Show error if present
+        if error:
+            out.append(f"ERROR: {error}")
+            return "\n".join(out)
 
         # sort markers by numeric key if possible
         def _mk_key(k):
@@ -204,7 +249,39 @@ def save_items_to_xlsx(
         out.append("totals:")
         for k, v in totals.items():
             out.append(f"  {k}: {v}")
+        out.append("")
+        out.append(f"autopass: {autopass.get('pass', False)}")
+        if autopass.get("reason"):
+            out.append(f"  reason: {autopass.get('reason')}")
         return "\n".join(out).strip()
+
+    def _render_markers(markers_analysis: dict) -> str:
+        """
+        Render markers_analysis. Handles both:
+        - NEW structure: {inn: {markers, totals, autopass}, ...}
+        - OLD structure: {markers, totals, autopass}
+        """
+        if not isinstance(markers_analysis, dict):
+            return ""
+
+        # Check if this is OLD structure (has "markers" key) or NEW (INN keys)
+        has_markers_key = "markers" in markers_analysis
+
+        if has_markers_key:
+            # OLD structure: render directly
+            return _render_markers_single_inn(markers_analysis)
+        else:
+            # NEW structure: render each INN
+            inn_parts: list[str] = []
+            for inn in sorted(markers_analysis.keys()):
+                inn_markers = markers_analysis[inn]
+                if not isinstance(inn_markers, dict):
+                    continue
+                inn_parts.append(f"INN: {inn}")
+                inn_parts.append(_render_markers_single_inn(inn_markers))
+                inn_parts.append("")  # blank line between INNs
+
+            return "\n".join(inn_parts).strip()
 
     # Build rows
     flat_rows: list[dict] = []
@@ -222,14 +299,36 @@ def save_items_to_xlsx(
                 continue  # handled below
             row[k] = _to_str(v)
 
-        # finances_data → financials column only (drop coefficients)
+        # finances_data can be:
+        # - NEW: {inn: {financials: {...}, ...}, ...}
+        # - OLD: {financials: {...}, ...}
         if isinstance(finances_data, dict):
-            financials = finances_data.get("financials")
-            row["financials"] = (
-                _render_financials(financials) if isinstance(financials, dict) else ""
-            )
+            # Check if this is OLD structure (has "financials" key) or NEW (INN keys)
+            has_financials_key = "financials" in finances_data
 
-        # markers_analysis → markers column
+            if has_financials_key:
+                # OLD structure: direct financials
+                financials = finances_data.get("financials")
+                row["financials"] = (
+                    _render_financials(financials)
+                    if isinstance(financials, dict)
+                    else ""
+                )
+            else:
+                # NEW structure: render each INN's financials
+                inn_financials_parts: list[str] = []
+                for inn in sorted(finances_data.keys()):
+                    inn_data = finances_data[inn]
+                    if not isinstance(inn_data, dict):
+                        continue
+                    financials = inn_data.get("financials")
+                    if financials:
+                        inn_financials_parts.append(f"INN: {inn}")
+                        inn_financials_parts.append(_render_financials(financials))
+                        inn_financials_parts.append("")  # blank line between INNs
+                row["financials"] = "\n".join(inn_financials_parts).strip()
+
+        # markers_analysis is now {inn: {markers, totals, autopass}}
         if isinstance(markers_analysis, dict):
             row["markers"] = _render_markers(markers_analysis)
 
@@ -385,59 +484,103 @@ def analyze_lots_finances_batch(
             logger.info(f"Skipping already analyzed item: {item.get('url', 'unknown')}")
             continue
 
-        # Extract raw financials (handle error cases)
-        raw_financials = finances_data.get("financials", {})
-        if isinstance(raw_financials, dict) and "error" in raw_financials:
-            data["markers_analysis"] = {
-                "error": f"Financials fetch error: {raw_financials['error']}",
-                "markers": {},
-                "totals": {"sum": 0},
-                "autopass": {"pass": False, "reason": None},
-            }
+        url = item.get("url", "unknown")
+
+        # Skip conditions (same as in fetch_finances_batch.py)
+        if (
+            data.get("individuals") == "физлицо"
+            or data.get("empty_individuals_but_no_inn_orgn")
+            or data.get("empty_inn_but_nonempty_orgn")
+        ):
+            data["markers_analysis"] = {}
+            logger.info(f"Skipping {url}: matches skip conditions")
             updated_count += 1
             continue
 
-        # DIAGNOSTIC LOGS: Add these to inspect per-item data
-        url = item.get("url", "unknown")
-        inn = data.get("bankrupt_inn", "unknown")
-        logger.info(f"[DIAG] Processing lot: URL={url}, INN={inn}")
-        if raw_financials:
-            sample_keys = list(raw_financials.keys())[:3]  # First 3 keys
-            sample_vals = {
-                k: list(raw_financials[k].get("values", {}).items())[:2]
-                for k in sample_keys
-            }  # Sample values per key
-            logger.info(
-                f"[DIAG] Raw financials sample for {inn}: keys={sample_keys}, sample_values={sample_vals}"
-            )
-        else:
-            logger.info(f"[DIAG] Empty raw_financials for {inn}")
+        # NEW: finances_data is now a dict of {inn: {financials: {...}, error: ...}}
+        if not isinstance(finances_data, dict) or len(finances_data) == 0:
+            data["markers_analysis"] = {}
+            logger.info(f"Skipping {url}: empty finances_data")
+            updated_count += 1
+            continue
 
-        # Run markers (financials only; coefficients not used in current markers)
-        try:
-            analysis = calculate_all_markers_from_json(raw_financials)
-            # DIAGNOSTIC: Log normalized sample and total score
-            normalized = normalize_rsbu_json(raw_financials)
-            sample_norm = {
-                k: dict(list(v.items())[:2]) for k, v in list(normalized.items())[:3]
-            }  # Sample normalized
-            logger.info(
-                f"[DIAG] Normalized sample for {inn}: {sample_norm}, total_points={analysis['totals']['sum']}"
-            )
-            data["markers_analysis"] = analysis
-            logger.info(
-                f"Analyzed item {url}: total points {analysis['totals']['sum']}"
-            )
-            updated_count += 1
-        except Exception as e:
-            logger.error(f"Error analyzing item {url}: {e}")
-            data["markers_analysis"] = {
-                "error": str(e),
-                "markers": {},
-                "totals": {"sum": 0},
-                "autopass": {"pass": False, "reason": None},
-            }
-            updated_count += 1
+        # Process each INN in finances_data
+        markers_analysis = {}
+
+        for inn, inn_data in finances_data.items():
+            if not isinstance(inn_data, dict):
+                # Create empty structure for consistency
+                markers_analysis[inn] = {
+                    "error": "Invalid inn_data format",
+                    "markers": {},
+                    "totals": {"sum": 0, "strong": 0, "medium": 0, "weak": 0},
+                    "autopass": {"pass": False, "reason": None},
+                }
+                continue
+
+            # Check for error in this INN's data
+            if "error" in inn_data:
+                markers_analysis[inn] = {
+                    "error": f"Financials fetch error: {inn_data['error']}",
+                    "markers": {},
+                    "totals": {"sum": 0, "strong": 0, "medium": 0, "weak": 0},
+                    "autopass": {"pass": False, "reason": None},
+                }
+                logger.info(f"[{url}] INN {inn}: has error - {inn_data['error']}")
+                continue
+
+            # Extract financials for this INN
+            raw_financials = inn_data.get("financials", {})
+            if not isinstance(raw_financials, dict) or len(raw_financials) == 0:
+                markers_analysis[inn] = {
+                    "error": "No financials data",
+                    "markers": {},
+                    "totals": {"sum": 0, "strong": 0, "medium": 0, "weak": 0},
+                    "autopass": {"pass": False, "reason": None},
+                }
+                logger.info(f"[{url}] INN {inn}: empty financials")
+                continue
+
+            # DIAGNOSTIC LOGS
+            logger.info(f"[DIAG] Processing lot: URL={url}, INN={inn}")
+            if raw_financials:
+                sample_keys = list(raw_financials.keys())[:3]
+                sample_vals = {
+                    k: list(raw_financials[k].get("values", {}).items())[:2]
+                    for k in sample_keys
+                }
+                logger.info(
+                    f"[DIAG] Raw financials sample for {inn}: keys={sample_keys}, sample_values={sample_vals}"
+                )
+
+            # Run markers for this INN
+            try:
+                analysis = calculate_all_markers_from_json(raw_financials)
+                # DIAGNOSTIC: Log normalized sample and total score
+                normalized = normalize_rsbu_json(raw_financials)
+                sample_norm = {
+                    k: dict(list(v.items())[:2])
+                    for k, v in list(normalized.items())[:3]
+                }
+                logger.info(
+                    f"[DIAG] Normalized sample for {inn}: {sample_norm}, total_points={analysis['totals']['sum']}"
+                )
+                markers_analysis[inn] = analysis
+                logger.info(
+                    f"Analyzed {url} INN {inn}: total points {analysis['totals']['sum']}"
+                )
+            except Exception as e:
+                logger.error(f"Error analyzing {url} INN {inn}: {e}")
+                markers_analysis[inn] = {
+                    "error": str(e),
+                    "markers": {},
+                    "totals": {"sum": 0, "strong": 0, "medium": 0, "weak": 0},
+                    "autopass": {"pass": False, "reason": None},
+                }
+
+        # Store markers_analysis as dict of INNs
+        data["markers_analysis"] = markers_analysis
+        updated_count += 1
 
     # Save to output file
     with open(output, "w", encoding="utf-8") as f:
@@ -1495,9 +1638,20 @@ def _demo() -> None:
     for k, v in results.items():
         print(f"Marker {k:>2}: {v} points")
     print(f"---\nTOTAL: {total_points} points\n")
-    # analyze_lots_finances_batch()
-    processed = process_batch_for_export(keep_only_autopass=True, drop_financials=False)
-    save_items_to_xlsx(processed, output_path="debug/lot_export.xlsx")
+
+    # Step 1: Analyze the finances file (adds markers_analysis to each lot)
+    analyze_lots_finances_batch(
+        input_path="debug/lot_details_with_finances2.json",
+        output_path="debug/lot_details_with_finances2_analyzed.json",
+    )
+
+    # Step 2: Process and export (filters by autopass)
+    processed = process_batch_for_export(
+        input_path="debug/lot_details_with_finances2_analyzed.json",
+        keep_only_autopass=True,
+        drop_financials=False,
+    )
+    save_items_to_xlsx(processed, output_path="debug/lot_export2.xlsx")
     logger.info(f"Full marker check complete. Total={total_points}")
 
 if __name__ == "__main__":
